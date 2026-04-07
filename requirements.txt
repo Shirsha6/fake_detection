@@ -1,0 +1,19 @@
+# ── OpenEnv (for validation) ─────────────────────
+openenv==0.1.13
+
+# ── Core runtime (actual execution engine) ───────
+openenv-core>=0.2.0
+
+# ── Web server ───────────────────────────────────
+fastapi==0.111.0
+uvicorn[standard]==0.29.0
+python-multipart==0.0.9
+
+# ── Data validation ──────────────────────────────
+pydantic==2.7.1
+
+# ── LLM client ───────────────────────────────────
+openai>=2.7.2
+
+# ── HTTP requests ────────────────────────────────
+requests==2.32.2

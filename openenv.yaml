@@ -1,0 +1,110 @@
+# pyproject.toml — FakeNews Detection OpenEnv
+# Required for: openenv validate (multi-mode deployment check)
+# Spec: PEP 517 (build-system) + PEP 621 (project metadata)
+
+# ─────────────────────────────────────────────
+# BUILD SYSTEM
+# ─────────────────────────────────────────────
+
+[build-system]
+requires      = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+# ─────────────────────────────────────────────
+# PROJECT METADATA  (PEP 621)
+# ─────────────────────────────────────────────
+
+[project]
+name        = "fakenews-detection-env"
+version     = "1.0.0"
+description = "Social Media Fake News Detection RL Environment for OpenEnv"
+readme      = "README.md"
+license     = "MIT"
+requires-python = ">=3.11"
+
+authors = [
+  { name = "Team OpenEnv Hackathon" }
+]
+
+keywords = [
+  "openenv",
+  "fake-news",
+  "misinformation",
+  "reinforcement-learning",
+  "social-media",
+  "rl-environment",
+  "agent-evaluation",
+]
+
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "Intended Audience :: Science/Research",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Operating System :: OS Independent",
+]
+
+# Runtime dependencies (mirrors requirements.txt exactly)
+dependencies = [
+  "fastapi==0.111.0",
+  "uvicorn[standard]==0.29.0",
+  "python-multipart==0.0.9",
+  "pydantic==2.7.1",
+  "openai==1.30.1",
+  "requests==2.32.2",
+]
+
+# ─────────────────────────────────────────────
+# ENTRY POINTS
+# ─────────────────────────────────────────────
+
+[project.scripts]
+fakenews-env = "main:main"
+
+# ─────────────────────────────────────────────
+# OPENENV TOOL CONFIG  (read by openenv validate)
+# ─────────────────────────────────────────────
+
+[tool.openenv]
+name            = "fakenews-detection-env"
+version         = "1.0.0"
+entry_point     = "server:app"
+port            = 7860
+framework       = "fastapi"
+manifest        = "openenv.yaml"
+
+  [tool.openenv.server]
+  host            = "0.0.0.0"
+  port            = 7860
+  module          = "server"
+  app             = "app"
+  dockerfile      = "Dockerfile"
+
+  [tool.openenv.tasks]
+  easy   = { ground_truth = "fake",        alert = "RED",    difficulty = "easy"   }
+  medium = { ground_truth = "likely_fake", alert = "RED",    difficulty = "medium" }
+  hard   = { ground_truth = "suspicious",  alert = "YELLOW", difficulty = "hard"   }
+
+  [tool.openenv.inference]
+  script          = "inference.py"
+  max_runtime_min = 20
+  min_vcpu        = 2
+  min_memory_gb   = 8
+
+# ─────────────────────────────────────────────
+# SETUPTOOLS CONFIG
+# ─────────────────────────────────────────────
+
+[tool.setuptools]
+py-modules = [
+  "models",
+  "rewards",
+  "env",
+  "tasks",
+  "grader",
+  "server",
+  "main",
+  "inference",
+]
