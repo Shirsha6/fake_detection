@@ -1,248 +1,164 @@
 """
-models.py — Member A
-All Pydantic models for the Fake News Detection OpenEnv Environment.
+Pydantic models for the FakeNews Detection OpenEnv environment.
+Typed Observation, Action, Reward models as required by OpenEnv spec.
 """
-
 from __future__ import annotations
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
+from enum import Enum
 
 
-# ─────────────────────────────────────────────
-# ENUMS / LITERALS
-# ─────────────────────────────────────────────
+# ─────────────────────────── Enums ───────────────────────────
 
-# What label the agent can assign to a post
-ClassificationLabel = Literal["real", "fake", "likely_fake", "suspicious", "unknown"]
-
-# Alert level the agent can raise
-AlertLevel = Literal["GREEN", "YELLOW", "RED"]
-
-# All valid step-based reasoning actions
-ActionType = Literal[
-    "analyze_claim",
-    "check_source",
-    "cross_verify",
-    "raise_alert",
-    "mark_safe",
-]
+class Label(str, Enum):
+    REAL = "real"
+    FAKE = "fake"
+    LIKELY_FAKE = "likely_fake"
+    SUSPICIOUS = "suspicious"
+    UNKNOWN = "unknown"
 
 
-# ─────────────────────────────────────────────
-# ACTION MODEL  (what the agent sends each step)
-# ─────────────────────────────────────────────
+class AlertLevel(str, Enum):
+    GREEN = "GREEN"
+    YELLOW = "YELLOW"
+    RED = "RED"
+
+
+class ActionType(str, Enum):
+    ANALYZE_CLAIM = "analyze_claim"
+    CHECK_SOURCE = "check_source"
+    CROSS_VERIFY = "cross_verify"
+    RAISE_ALERT = "raise_alert"
+    MARK_SAFE = "mark_safe"
+
+
+# ─────────────────────────── Action ───────────────────────────
 
 class Action(BaseModel):
-    """
-    The action the agent takes at each step.
-
-    Fields
-    ------
-    action_type : one of the 5 reasoning actions
-    classification : the label the agent assigns (optional — only required on final actions)
-    alert_level   : alert to raise (optional — used with raise_alert / mark_safe)
-    reasoning     : free-text explanation from the agent (used for partial scoring)
-    target_claim  : specific claim being investigated (optional — used with analyze_claim / cross_verify)
-    source_name   : source being checked (optional — used with check_source)
-    """
-
+    """Agent action model."""
     action_type: ActionType = Field(
         ...,
-        description="The reasoning step the agent is performing."
+        description="Type of reasoning step the agent takes."
     )
-    classification: Optional[ClassificationLabel] = Field(
-        default=None,
-        description="Agent's classification of the post. Required on raise_alert or mark_safe."
-    )
-    alert_level: Optional[AlertLevel] = Field(
-        default=None,
-        description="Alert level to set. Required on raise_alert or mark_safe."
+    target: Optional[str] = Field(
+        None,
+        description="Target of the action (e.g. claim text, source name, or alert level)."
     )
     reasoning: Optional[str] = Field(
-        default=None,
-        description="Agent's explanation for this action step."
+        None,
+        description="Agent's reasoning for this action (used in confidence calibration)."
     )
-    target_claim: Optional[str] = Field(
-        default=None,
-        description="The specific claim the agent is analyzing or cross-verifying."
+    final_label: Optional[Label] = Field(
+        None,
+        description="Final label if action_type is raise_alert or mark_safe."
     )
-    source_name: Optional[str] = Field(
-        default=None,
-        description="The source name the agent is checking credibility for."
+    confidence: Optional[float] = Field(
+        None,
+        ge=0.0,
+        le=1.0,
+        description="Agent's confidence in this action (0.0–1.0)."
     )
 
 
-# ─────────────────────────────────────────────
-# OBSERVATION MODEL  (what the env returns each step)
-# ─────────────────────────────────────────────
+# ─────────────────────────── Observation ───────────────────────────
 
 class Observation(BaseModel):
-    """
-    Everything the agent can observe after each action.
+    """What the agent sees at each step."""
+    post_id: str = Field(..., description="Unique identifier for the social media post.")
+    post_text: str = Field(..., description="Full text of the social media post.")
+    task_description: str = Field(..., description="What the agent needs to accomplish.")
+    step_number: int = Field(..., description="Current step number in the episode.")
+    max_steps: int = Field(..., description="Maximum steps allowed in this episode.")
 
-    Fields
-    ------
-    post_text         : the original social media post
-    extracted_claims  : list of claims extracted from the post
-    source_info       : credibility info for sources mentioned in the post
-    pattern_flags     : list of suspicious phrase/pattern flags found
-    virality_risk     : risk label — "low", "medium", "high"
-    known_claims      : which extracted claims are in the knowledge base
-    current_label     : current classification label in env state
-    current_alert     : current alert level in env state
-    confidence        : current confidence score 0.0–1.0
-    fake_score        : multi-signal fake score 0.0–1.0
-    step_feedback     : natural language feedback on the last action
-    step_number       : current step index
-    done_hint         : True if env thinks episode should end soon
-    available_actions : which action types are still meaningful to call
-    """
-
-    post_text: str = Field(..., description="The full social media post text.")
-
-    extracted_claims: List[str] = Field(
+    # Evidence accumulated so far
+    claims_extracted: List[str] = Field(
         default_factory=list,
-        description="Claims extracted from the post."
+        description="Claims extracted so far by the agent."
     )
-    source_info: Dict[str, Any] = Field(
-        default_factory=dict,
-        description="Source name → credibility dict (score, tier, known)."
-    )
-    pattern_flags: List[str] = Field(
+    sources_checked: List[Dict[str, Any]] = Field(
         default_factory=list,
-        description="Suspicious language patterns detected in the post."
+        description="Sources checked so far with credibility info."
     )
-    virality_risk: Literal["low", "medium", "high"] = Field(
-        default="low",
-        description="Estimated virality risk of the post."
+    patterns_detected: List[str] = Field(
+        default_factory=list,
+        description="Fake-news linguistic patterns detected."
     )
-    known_claims: Dict[str, bool] = Field(
-        default_factory=dict,
-        description="claim → True if found in knowledge base, False if not."
+    cross_verifications: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="Cross-verification results from knowledge base."
     )
-    current_label: Optional[ClassificationLabel] = Field(
-        default=None,
-        description="The agent's current classification label."
-    )
-    current_alert: Optional[AlertLevel] = Field(
-        default=None,
-        description="The current alert level set in the environment."
-    )
-    confidence: float = Field(
-        default=0.0,
+
+    # Signals
+    current_fake_score: float = Field(
+        0.0,
         ge=0.0,
         le=1.0,
-        description="Agent's current confidence in its classification."
+        description="Aggregated fake score so far (0=real, 1=fake)."
     )
-    fake_score: float = Field(
-        default=0.0,
-        ge=0.0,
-        le=1.0,
-        description="Multi-signal fake score computed by detection engine."
+    current_alert: AlertLevel = Field(
+        AlertLevel.GREEN,
+        description="Current alert level based on evidence gathered."
     )
-    step_feedback: str = Field(
-        default="",
-        description="Feedback message from the environment for the last step."
+    available_actions: List[str] = Field(
+        default_factory=list,
+        description="Actions available at this step."
     )
-    step_number: int = Field(
-        default=0,
-        description="Current step index (0-based)."
-    )
-    done_hint: bool = Field(
-        default=False,
-        description="True when the env recommends ending the episode."
-    )
-    available_actions: List[ActionType] = Field(
-        default_factory=lambda: [
-            "analyze_claim",
-            "check_source",
-            "cross_verify",
-            "raise_alert",
-            "mark_safe",
-        ],
-        description="Action types still valid at this step."
+    message: str = Field(
+        "",
+        description="System message/hint for the agent."
     )
 
 
-# ─────────────────────────────────────────────
-# STEP RESULT MODEL  (returned by step())
-# ─────────────────────────────────────────────
+# ─────────────────────────── Reward ───────────────────────────
+
+class Reward(BaseModel):
+    """Reward model with breakdown."""
+    total: float = Field(..., ge=-1.0, le=1.0, description="Total reward for this step.")
+    detection_accuracy: float = Field(0.0, description="Reward for correct label detection.")
+    alert_correctness: float = Field(0.0, description="Reward for correct alert level.")
+    efficiency: float = Field(0.0, description="Penalty for wasting steps.")
+    confidence_calibration: float = Field(0.0, description="Reward for calibrated confidence.")
+    explanation: str = Field("", description="Human-readable reward breakdown.")
+
+
+# ─────────────────────────── State ───────────────────────────
+
+class EnvState(BaseModel):
+    """Full environment state (returned by state() endpoint)."""
+    task_id: str
+    task_name: str
+    post_id: str
+    post_text: str
+    ground_truth_label: Label
+    ground_truth_alert: AlertLevel
+    step_number: int
+    max_steps: int
+    done: bool
+    claims_extracted: List[str] = Field(default_factory=list)
+    sources_checked: List[Dict[str, Any]] = Field(default_factory=list)
+    patterns_detected: List[str] = Field(default_factory=list)
+    cross_verifications: List[Dict[str, Any]] = Field(default_factory=list)
+    current_fake_score: float = 0.0
+    current_alert: AlertLevel = AlertLevel.GREEN
+    final_label: Optional[Label] = None
+    final_alert: Optional[AlertLevel] = None
+    episode_rewards: List[float] = Field(default_factory=list)
+    total_reward: float = 0.0
+    agent_actions: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+# ─────────────────────────── Step Result ───────────────────────────
 
 class StepResult(BaseModel):
-    """
-    The full result returned by env.step(action).
-
-    Fields
-    ------
-    observation : updated observation after the action
-    reward      : immediate reward for this step (can be negative)
-    done        : True if episode is complete
-    info        : extra debug/metadata dict
-    """
-
+    """Result returned after env.step()."""
     observation: Observation
-    reward: float = Field(
-        ...,
-        description="Immediate step reward. Range roughly -1.0 to +1.0."
-    )
-    done: bool = Field(
-        ...,
-        description="Whether the episode has ended."
-    )
-    info: Dict[str, Any] = Field(
-        default_factory=dict,
-        description="Extra metadata: cumulative reward, error messages, grader hints, etc."
-    )
+    reward: float
+    reward_details: Reward
+    done: bool
+    info: Dict[str, Any] = Field(default_factory=dict)
 
 
-# ─────────────────────────────────────────────
-# EPISODE STATE MODEL  (returned by state())
-# ─────────────────────────────────────────────
-
-class EpisodeState(BaseModel):
-    """
-    Full internal state of the environment (returned by state()).
-
-    Fields
-    ------
-    task_id           : which task is loaded ("easy", "medium", "hard")
-    post_text         : the original post
-    ground_truth      : the true label (hidden from agent, used by grader)
-    ground_truth_alert: the correct alert level
-    step_number       : how many steps have been taken
-    max_steps         : step limit before forced termination
-    cumulative_reward : total reward accumulated so far
-    actions_taken     : history of all actions taken this episode
-    current_label     : current label set by agent
-    current_alert     : current alert set by agent
-    confidence        : current confidence
-    fake_score        : last computed fake score
-    done              : whether episode is complete
-    """
-
-    task_id: str = Field(..., description="Task difficulty: easy / medium / hard.")
-    post_text: str = Field(..., description="The social media post being analyzed.")
-
-    ground_truth: ClassificationLabel = Field(
-        ...,
-        description="True label — used by grader only, never revealed in observation."
-    )
-    ground_truth_alert: AlertLevel = Field(
-        ...,
-        description="Correct alert level — used by grader only."
-    )
-
-    step_number: int = Field(default=0)
-    max_steps: int = Field(default=10)
-    cumulative_reward: float = Field(default=0.0)
-
-    actions_taken: List[Dict[str, Any]] = Field(
-        default_factory=list,
-        description="Log of all actions taken this episode."
-    )
-
-    current_label: Optional[ClassificationLabel] = Field(default=None)
-    current_alert: Optional[AlertLevel] = Field(default=None)
-    confidence: float = Field(default=0.0)
-    fake_score: float = Field(default=0.0)
-    done: bool = Field(default=False)
+class ResetResult(BaseModel):
+    """Result returned after env.reset()."""
+    observation: Observation
+    info: Dict[str, Any] = Field(default_factory=dict)

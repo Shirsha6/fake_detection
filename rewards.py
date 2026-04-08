@@ -1,263 +1,267 @@
 """
-rewards.py — Member B (FINAL CLEAN VERSION)
-
-Detection engine + reward system for Fake News Environment.
-Fully deterministic. No external dependencies.
+Reward system for the FakeNews Detection Environment.
+Provides partial rewards, penalties, and continuous scoring signals.
 """
-
 from __future__ import annotations
-
 from typing import Any, Dict, List, Optional, Tuple
+from models import Label, AlertLevel, Reward, EnvState, Action, ActionType
 
-from models import AlertLevel, ClassificationLabel
 
+# ─────────────────────────── Constants ───────────────────────────
 
-# ═══════════════════════════════════════════════════════════════════
-# KNOWLEDGE BASE
-# ═══════════════════════════════════════════════════════════════════
+LABEL_COMPATIBILITY: Dict[Tuple[Label, Label], float] = {
+    # (ground_truth, predicted): compatibility score
+    (Label.FAKE, Label.FAKE): 1.0,
+    (Label.FAKE, Label.LIKELY_FAKE): 0.5,
+    (Label.FAKE, Label.SUSPICIOUS): 0.3,
+    (Label.FAKE, Label.UNKNOWN): 0.0,
+    (Label.FAKE, Label.REAL): -1.0,
 
-KNOWLEDGE_BASE: Dict[str, Dict[str, Any]] = {
-    "the earth orbits the sun": {
-        "verdict": "true",
-        "explanation": "Basic established astronomical fact.",
-        "confidence": 1.0,
-    },
-    "vaccines cause autism": {
-        "verdict": "false",
-        "explanation": "Debunked by scientific consensus.",
-        "confidence": 1.0,
-    },
-    "5g towers spread covid-19": {
-        "verdict": "false",
-        "explanation": "Viruses do not spread via radio waves.",
-        "confidence": 1.0,
-    },
-    "climate change is supported by scientific consensus": {
-        "verdict": "true",
-        "explanation": "Overwhelming scientific agreement.",
-        "confidence": 0.98,
-    },
+    (Label.LIKELY_FAKE, Label.LIKELY_FAKE): 1.0,
+    (Label.LIKELY_FAKE, Label.FAKE): 0.6,
+    (Label.LIKELY_FAKE, Label.SUSPICIOUS): 0.5,
+    (Label.LIKELY_FAKE, Label.UNKNOWN): 0.1,
+    (Label.LIKELY_FAKE, Label.REAL): -0.8,
+
+    (Label.SUSPICIOUS, Label.SUSPICIOUS): 1.0,
+    (Label.SUSPICIOUS, Label.LIKELY_FAKE): 0.7,
+    (Label.SUSPICIOUS, Label.UNKNOWN): 0.3,
+    (Label.SUSPICIOUS, Label.FAKE): 0.2,
+    (Label.SUSPICIOUS, Label.REAL): -0.5,
+
+    (Label.REAL, Label.REAL): 1.0,
+    (Label.REAL, Label.SUSPICIOUS): -0.3,
+    (Label.REAL, Label.LIKELY_FAKE): -0.7,
+    (Label.REAL, Label.FAKE): -1.0,
+    (Label.REAL, Label.UNKNOWN): 0.0,
+
+    (Label.UNKNOWN, Label.UNKNOWN): 0.5,
+    (Label.UNKNOWN, Label.SUSPICIOUS): 0.4,
+    (Label.UNKNOWN, Label.REAL): 0.2,
+    (Label.UNKNOWN, Label.LIKELY_FAKE): 0.2,
+    (Label.UNKNOWN, Label.FAKE): 0.1,
 }
 
+ALERT_COMPATIBILITY: Dict[Tuple[AlertLevel, AlertLevel], float] = {
+    (AlertLevel.RED, AlertLevel.RED): 1.0,
+    (AlertLevel.RED, AlertLevel.YELLOW): 0.3,
+    (AlertLevel.RED, AlertLevel.GREEN): -1.0,
 
-# ═══════════════════════════════════════════════════════════════════
-# SOURCE CREDIBILITY
-# ═══════════════════════════════════════════════════════════════════
+    (AlertLevel.YELLOW, AlertLevel.YELLOW): 1.0,
+    (AlertLevel.YELLOW, AlertLevel.RED): 0.4,
+    (AlertLevel.YELLOW, AlertLevel.GREEN): -0.5,
 
-SOURCE_CREDIBILITY: Dict[str, Dict[str, Any]] = {
-    "reuters": {"score": 0.95, "tier": "high", "known": True},
-    "bbc": {"score": 0.90, "tier": "high", "known": True},
-    "infowars": {"score": 0.05, "tier": "unreliable", "known": True},
+    (AlertLevel.GREEN, AlertLevel.GREEN): 1.0,
+    (AlertLevel.GREEN, AlertLevel.YELLOW): -0.3,
+    (AlertLevel.GREEN, AlertLevel.RED): -1.0,
 }
 
-UNKNOWN_SOURCE_DEFAULT = {
-    "score": 0.30,
-    "tier": "low",
-    "known": False,
+# Action value at each step (partial progress signal)
+ACTION_STEP_REWARDS: Dict[ActionType, float] = {
+    ActionType.ANALYZE_CLAIM: 0.08,
+    ActionType.CHECK_SOURCE: 0.06,
+    ActionType.CROSS_VERIFY: 0.10,
+    ActionType.RAISE_ALERT: 0.0,   # Evaluated separately
+    ActionType.MARK_SAFE: 0.0,     # Evaluated separately
 }
 
-
-# ═══════════════════════════════════════════════════════════════════
-# PATTERN DETECTION
-# ═══════════════════════════════════════════════════════════════════
-
-FAKE_PATTERNS: Dict[str, float] = {
-    "wake up sheeple": 0.9,
-    "share before they delete": 0.9,
-    "miracle cure": 0.85,
-    "you won't believe": 0.6,
-}
+# Penalties
+REPEATED_ACTION_PENALTY = -0.05
+UNNECESSARY_STEP_PENALTY = -0.03
+FALSE_POSITIVE_PENALTY = -0.40    # Raising RED when GREEN
+FALSE_NEGATIVE_PENALTY = -0.50    # Marking safe when RED
+WRONG_ALERT_PENALTY = -0.20
 
 
-# ═══════════════════════════════════════════════════════════════════
-# VIRALITY
-# ═══════════════════════════════════════════════════════════════════
+# ─────────────────────────── Reward Calculator ───────────────────────────
 
-VIRALITY_RISK_MULTIPLIER = {
-    "low": 1.0,
-    "medium": 1.15,
-    "high": 1.3,
-}
+class RewardCalculator:
+    """
+    Calculates step-level and episode-level rewards.
+    All calculations are deterministic.
+    """
 
+    def __init__(self, task: Dict[str, Any]):
+        self.task = task
+        self.ground_truth_label: Label = task["ground_truth_label"]
+        self.ground_truth_alert: AlertLevel = task["ground_truth_alert"]
+        self.max_steps: int = task["max_steps"]
+        self.action_history: List[ActionType] = []
 
-# ═══════════════════════════════════════════════════════════════════
-# DETECTOR
-# ═══════════════════════════════════════════════════════════════════
-
-class FakeNewsDetector:
-
-    def check_claim(self, claim: str) -> Dict[str, Any]:
-        key = claim.lower().strip()
-
-        if key in KNOWLEDGE_BASE:
-            entry = KNOWLEDGE_BASE[key]
-            return {"found": True, "claim": claim, **entry}
-
-        return {
-            "found": False,
-            "claim": claim,
-            "verdict": "unknown",
-            "explanation": "Not found in KB",
-            "confidence": 0.0,
-        }
-
-    def cross_verify(self, claim: str, extracted_claims: List[str]) -> Dict[str, Any]:
-        claims = [claim] + extracted_claims
-        results = [self.check_claim(c) for c in claims]
-
-        score = sum(
-            1.0 if r["verdict"] == "false"
-            else 0.5 if r["verdict"] == "partial"
-            else 0.3 if r["verdict"] == "unknown"
-            else 0.0
-            for r in results
-        ) / max(len(results), 1)
-
-        return {
-            "results": results,
-            "aggregate_fake_signal": round(score, 4),
-            "summary": f"{len(results)} claims checked",
-        }
-
-    def get_source_credibility(self, source: str) -> Dict[str, Any]:
-        key = source.lower().strip()
-        entry = SOURCE_CREDIBILITY.get(key, UNKNOWN_SOURCE_DEFAULT)
-        return {"source": source, **entry}
-
-    def detect_patterns(self, text: str) -> Dict[str, Any]:
-        text = text.lower()
-        flags = [p for p in FAKE_PATTERNS if p in text]
-
-        score = min(len(flags) * 0.2, 1.0)
-
-        return {
-            "flags": flags,
-            "pattern_score": score,
-        }
-
-    def compute_fake_score(
+    def step_reward(
         self,
-        post_text: str,
-        extracted_claims: List[str],
-        sources: List[str],
-        virality_risk: str,
-    ) -> Dict[str, Any]:
+        action: Action,
+        state: EnvState,
+        action_result: Dict[str, Any],
+    ) -> Reward:
+        """
+        Calculate reward for a single step.
+        Provides partial progress signals throughout the episode.
+        """
+        base_reward = 0.0
+        detection_accuracy = 0.0
+        alert_correctness = 0.0
+        efficiency = 0.0
+        confidence_cal = 0.0
+        explanation_parts = []
 
-        pattern = self.detect_patterns(post_text)
-        pattern_score = pattern["pattern_score"]
+        # ── 1. Base action reward (partial progress) ──
+        action_value = ACTION_STEP_REWARDS.get(action.action_type, 0.0)
 
-        if sources:
-            source_scores = [
-                self.get_source_credibility(s)["score"] for s in sources
-            ]
-            source_score = 1 - sum(source_scores) / len(source_scores)
+        # Penalize repeated identical actions
+        recent = self.action_history[-2:] if len(self.action_history) >= 2 else []
+        if all(a == action.action_type for a in recent):
+            action_value += REPEATED_ACTION_PENALTY
+            explanation_parts.append("Penalized for repeating the same action.")
         else:
-            source_score = 0.4
+            explanation_parts.append(f"Step reward for {action.action_type.value}: +{action_value:.2f}")
 
-        if extracted_claims:
-            cross = self.cross_verify(extracted_claims[0], extracted_claims[1:])
-            claim_score = cross["aggregate_fake_signal"]
-            claim_results = cross["results"]
-        else:
-            claim_score = 0.3
-            claim_results = []
+        self.action_history.append(action.action_type)
+        base_reward += action_value
 
-        raw = (pattern_score * 0.3 + source_score * 0.35 + claim_score * 0.35)
+        # ── 2. Quality of action result ──
+        if action.action_type == ActionType.ANALYZE_CLAIM:
+            if action_result.get("kb_verdict"):
+                base_reward += 0.05
+                explanation_parts.append("Claim found in knowledge base: +0.05")
+            if action_result.get("patterns_found"):
+                n_patterns = len(action_result["patterns_found"])
+                pattern_bonus = min(0.03 * n_patterns, 0.12)
+                base_reward += pattern_bonus
+                explanation_parts.append(f"Detected {n_patterns} fake patterns: +{pattern_bonus:.2f}")
 
-        multiplier = VIRALITY_RISK_MULTIPLIER.get(virality_risk, 1.0)
+        elif action.action_type == ActionType.CHECK_SOURCE:
+            credibility = action_result.get("credibility", 0.5)
+            tier = action_result.get("tier", "unknown")
+            if tier in ("misinformation", "fake_news_site", "conspiracy"):
+                base_reward += 0.08
+                explanation_parts.append(f"Identified low-credibility source ({tier}): +0.08")
+            elif tier == "anonymous":
+                base_reward += 0.04
+                explanation_parts.append("Identified anonymous source: +0.04")
+            elif credibility > 0.85:
+                base_reward += 0.03
+                explanation_parts.append("High-credibility source identified: +0.03")
 
-        fake_score = min(raw * multiplier, 1.0)
+        elif action.action_type == ActionType.CROSS_VERIFY:
+            if action_result.get("verified"):
+                base_reward += 0.06
+                explanation_parts.append("Successful cross-verification: +0.06")
+            if action_result.get("contradiction_found"):
+                base_reward += 0.08
+                explanation_parts.append("Contradiction found — strong evidence: +0.08")
 
-        return {
-            "fake_score": round(fake_score, 4),
-            "flags": pattern["flags"],
-            "source_info": {},
-            "claim_results": claim_results,
-        }
+        # ── 3. Final verdict actions ──
+        elif action.action_type in (ActionType.RAISE_ALERT, ActionType.MARK_SAFE):
+            predicted_label = action.final_label
+            predicted_alert = self._infer_alert_from_action(action)
 
-    def classify(
+            if predicted_label is not None:
+                label_score = LABEL_COMPATIBILITY.get(
+                    (self.ground_truth_label, predicted_label), 0.0
+                )
+                detection_accuracy = label_score * 0.4
+                base_reward += detection_accuracy
+                explanation_parts.append(
+                    f"Label accuracy ({self.ground_truth_label.value} vs {predicted_label.value}): "
+                    f"{detection_accuracy:+.2f}"
+                )
+
+            if predicted_alert is not None:
+                alert_score = ALERT_COMPATIBILITY.get(
+                    (self.ground_truth_alert, predicted_alert), 0.0
+                )
+                alert_correctness = alert_score * 0.3
+                base_reward += alert_correctness
+                explanation_parts.append(
+                    f"Alert accuracy ({self.ground_truth_alert.value} vs {predicted_alert.value}): "
+                    f"{alert_correctness:+.2f}"
+                )
+
+                # Severe penalties
+                if (self.ground_truth_alert == AlertLevel.GREEN and
+                        predicted_alert == AlertLevel.RED):
+                    base_reward += FALSE_POSITIVE_PENALTY
+                    explanation_parts.append(f"False positive penalty: {FALSE_POSITIVE_PENALTY}")
+                elif (self.ground_truth_alert == AlertLevel.RED and
+                      predicted_alert == AlertLevel.GREEN):
+                    base_reward += FALSE_NEGATIVE_PENALTY
+                    explanation_parts.append(f"False negative penalty: {FALSE_NEGATIVE_PENALTY}")
+
+            # Confidence calibration
+            if action.confidence is not None:
+                confidence_cal = self._calibrate_confidence(
+                    action.confidence, detection_accuracy, alert_correctness
+                )
+                base_reward += confidence_cal
+                explanation_parts.append(
+                    f"Confidence calibration: {confidence_cal:+.2f}"
+                )
+
+        # ── 4. Efficiency ──
+        step_fraction = state.step_number / self.max_steps
+        if step_fraction > 0.8 and action.action_type not in (
+            ActionType.RAISE_ALERT, ActionType.MARK_SAFE
+        ):
+            efficiency = UNNECESSARY_STEP_PENALTY
+            base_reward += efficiency
+            explanation_parts.append(f"Late-step inefficiency penalty: {efficiency}")
+
+        # Clamp
+        total = max(-1.0, min(1.0, base_reward))
+
+        return Reward(
+            total=total,
+            detection_accuracy=detection_accuracy,
+            alert_correctness=alert_correctness,
+            efficiency=efficiency,
+            confidence_calibration=confidence_cal,
+            explanation=" | ".join(explanation_parts),
+        )
+
+    def _infer_alert_from_action(self, action: Action) -> Optional[AlertLevel]:
+        """Infer alert level from action type and final label."""
+        if action.action_type == ActionType.MARK_SAFE:
+            return AlertLevel.GREEN
+        if action.action_type == ActionType.RAISE_ALERT:
+            label = action.final_label
+            if label in (Label.FAKE,):
+                return AlertLevel.RED
+            elif label in (Label.LIKELY_FAKE, Label.SUSPICIOUS):
+                return AlertLevel.YELLOW
+            elif label == Label.REAL:
+                return AlertLevel.GREEN
+        return None
+
+    def _calibrate_confidence(
         self,
-        fake_score: float,
-        claim_results: List[Dict[str, Any]],
-        source_info: Dict[str, Any],
-        flags: List[str],
-    ) -> Dict[str, Any]:
+        confidence: float,
+        label_score: float,
+        alert_score: float
+    ) -> float:
+        """
+        Reward well-calibrated confidence.
+        If the agent is correct and confident → positive reward.
+        If the agent is wrong and confident → negative reward (overconfidence penalty).
+        If the agent is uncertain (0.4–0.6) regardless of correctness → small neutral reward.
+        """
+        correctness = (label_score + alert_score) / 2
+        is_correct = correctness > 0.0
 
-        if fake_score > 0.75:
-            return {"label": "fake", "alert_level": "RED", "confidence": 0.9}
-        elif fake_score > 0.55:
-            return {"label": "likely_fake", "alert_level": "RED", "confidence": 0.8}
-        elif fake_score > 0.35:
-            return {"label": "suspicious", "alert_level": "YELLOW", "confidence": 0.7}
+        if is_correct:
+            # Reward proportional to confidence × correctness
+            return 0.1 * confidence * correctness
         else:
-            return {"label": "real", "alert_level": "GREEN", "confidence": 0.85}
+            # Penalize overconfidence on wrong answers
+            return -0.1 * confidence * abs(correctness)
 
-
-# ═══════════════════════════════════════════════════════════════════
-# REWARD SYSTEM
-# ═══════════════════════════════════════════════════════════════════
-
-ALERT_RANK = {"GREEN": 0, "YELLOW": 1, "RED": 2}
-
-
-class RewardComputer:
-
-    def reward_analyze_claim(self, claim_result, already_analyzed, target_claim):
-        if target_claim in already_analyzed:
-            return -0.1, "Repeated claim"
-
-        if claim_result["found"]:
-            return 0.2, "Useful claim verified"
-        return 0.05, "Unknown claim checked"
-
-    def reward_check_source(self, source_result, already_checked, source_name):
-        if source_name in already_checked:
-            return -0.08, "Repeated source"
-
-        tier = source_result.get("tier", "low")
-
-        if tier == "unreliable":
-            return 0.18, "Unreliable source found"
-        elif tier == "high":
-            return 0.15, "Credible source verified"
-        return 0.1, "Source checked"
-
-    def reward_cross_verify(self, cross_result, already_cross_verified):
-        if already_cross_verified:
-            return -0.05, "Already cross verified"
-
-        signal = cross_result.get("aggregate_fake_signal", 0)
-
-        if signal > 0.7:
-            return 0.22, "Strong fake signal"
-        elif signal > 0.4:
-            return 0.15, "Moderate fake signal"
-        return 0.1, "Weak signal"
-
-    def reward_terminal(
-        self,
-        agent_label,
-        agent_alert,
-        ground_truth,
-        ground_truth_alert,
-        step_number,
-        max_steps,
-        confidence,
-    ):
-
-        label_score = 0.5 if agent_label == ground_truth else -0.2
-
-        alert_diff = abs(ALERT_RANK[agent_alert] - ALERT_RANK[ground_truth_alert])
-
-        if alert_diff == 0:
-            alert_score = 0.25
-        elif alert_diff == 1:
-            alert_score = 0.1
-        else:
-            alert_score = -0.1
-
-        efficiency = 0.15 * (1 - step_number / max_steps)
-
-        total = label_score + alert_score + efficiency
-
-        return round(total, 4), f"Final reward: {total:.3f}"
+    def episode_bonus(self, state: EnvState) -> float:
+        """
+        End-of-episode bonus reward.
+        Rewards completing with fewer steps than max.
+        """
+        if not state.done:
+            return 0.0
+        steps_used = state.step_number
+        step_efficiency = 1.0 - (steps_used / self.max_steps)
+        return 0.05 * step_efficiency

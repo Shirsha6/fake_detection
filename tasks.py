@@ -1,185 +1,316 @@
 """
-tasks.py — Member B
-Defines 3 tasks (easy / medium / hard) with realistic social media posts.
-Registers all tasks into env.TASK_REGISTRY on import.
+Task definitions for the FakeNews Detection Environment.
+3 tasks: easy → medium → hard with realistic social media posts.
+All data is deterministic (no external API calls).
 """
-
 from __future__ import annotations
-from env import register_task
+from typing import Any, Dict, List, Optional
+from models import Label, AlertLevel
 
-# ═══════════════════════════════════════════════════════════════════
-# TASK 1 — EASY
-# Post contains obvious fake patterns + known false claim + unreliable source
-# Ground truth: fake / RED
-# ═══════════════════════════════════════════════════════════════════
 
-TASK_EASY = {
-    "task_id": "easy",
-    "difficulty": "easy",
-    "post_text": (
-        "SHARE BEFORE THEY DELETE THIS!!! Scientists have PROVEN that 5G towers spread "
-        "COVID-19 and the government is lying about it. They don't want you to know the "
-        "truth. A doctor from naturalcures.com confirmed that 5G activates the virus in "
-        "your body. Wake up sheeple! Repost immediately before it gets censored by Big Tech!"
-    ),
-    "ground_truth": "fake",
-    "ground_truth_alert": "RED",
-    "extracted_claims": [
-        "5g towers spread covid-19",
-        "the government is lying",
-        "5g activates the virus in your body",
-    ],
-    "sources": ["naturalcures.com"],
-    "virality_risk": "high",
-    # Hints for grader
-    "expected_patterns": [
-        "share before they delete",
-        "they don't want you to know",
-        "wake up sheeple",
-        "the government is lying",
-        "censored by",
-        "repost immediately",
-    ],
-    "expected_source_tier": "unreliable",
-    "description": (
-        "A straightforward fake post containing multiple red-flag patterns, "
-        "a clearly false claim (5G-COVID link), and an unreliable source. "
-        "An agent should be able to detect this with minimal investigation steps."
-    ),
+# ─────────────────────────── Knowledge Base ───────────────────────────
+
+KNOWLEDGE_BASE: Dict[str, Dict[str, Any]] = {
+    # Verifiable facts (deterministic)
+    "covid vaccines contain microchips": {
+        "verdict": "false",
+        "explanation": "No credible scientific evidence. Debunked by CDC, WHO, peer-reviewed studies.",
+        "sources": ["CDC", "WHO", "Nature Medicine"],
+    },
+    "5g towers cause cancer": {
+        "verdict": "false",
+        "explanation": "Non-ionizing radiation at 5G frequencies is not strong enough to damage DNA.",
+        "sources": ["ICNIRP", "WHO", "IEEE"],
+    },
+    "drinking bleach cures covid": {
+        "verdict": "false",
+        "explanation": "Extremely dangerous health misinformation. FDA issued strong warnings.",
+        "sources": ["FDA", "CDC", "Poison Control"],
+    },
+    "moon landing was faked": {
+        "verdict": "false",
+        "explanation": "Extensively documented. Hundreds of scientists from multiple countries verified.",
+        "sources": ["NASA", "ESA", "Smithsonian"],
+    },
+    "climate change is caused by human activity": {
+        "verdict": "true",
+        "explanation": "97%+ scientific consensus from over 10,000 peer-reviewed studies.",
+        "sources": ["IPCC", "NASA", "NOAA"],
+    },
+    "earth is flat": {
+        "verdict": "false",
+        "explanation": "Earth is an oblate spheroid. Confirmed by astronomy, physics, and direct observation.",
+        "sources": ["NASA", "ESA", "Basic Physics"],
+    },
+    "vaccines cause autism": {
+        "verdict": "false",
+        "explanation": "The original study was retracted and its author lost medical license for fraud.",
+        "sources": ["Lancet retraction", "CDC", "AAP"],
+    },
+    "new study suggests moderate coffee consumption has health benefits": {
+        "verdict": "likely_true",
+        "explanation": "Multiple studies suggest antioxidants in coffee may have benefits when consumed moderately.",
+        "sources": ["Harvard School of Public Health", "NEJM"],
+    },
+    "local politician seen at event": {
+        "verdict": "unverifiable",
+        "explanation": "Cannot be independently verified from knowledge base.",
+        "sources": [],
+    },
+    "election results were manipulated": {
+        "verdict": "contested",
+        "explanation": "Broad claim without specific evidence. Courts found no systematic fraud in 2020 US election.",
+        "sources": ["DHS CISA", "DOJ", "60+ court rulings"],
+    },
+    "stock market will crash tomorrow": {
+        "verdict": "unverifiable",
+        "explanation": "Predictions about future market movements cannot be verified.",
+        "sources": [],
+    },
+    "miracle cure found for all cancers": {
+        "verdict": "false",
+        "explanation": "No single cure exists for all cancers. Highly suspicious health claim.",
+        "sources": ["NCI", "WHO", "ACS"],
+    },
+    "government hiding alien contact": {
+        "verdict": "unverifiable",
+        "explanation": "No verifiable evidence. Conspiracy claim with extraordinary burden of proof.",
+        "sources": [],
+    },
+    "water fluoridation causes brain damage": {
+        "verdict": "false",
+        "explanation": "At recommended levels, fluoride is safe. CDC and WHO endorse fluoridation.",
+        "sources": ["CDC", "WHO", "ADA"],
+    },
+    "exercise improves mental health": {
+        "verdict": "true",
+        "explanation": "Extensively researched. Exercise releases endorphins and reduces cortisol.",
+        "sources": ["Mayo Clinic", "NIMH", "Lancet Psychiatry"],
+    },
 }
 
-# ═══════════════════════════════════════════════════════════════════
-# TASK 2 — MEDIUM
-# Post contains partial truths + mixed source credibility + subtle manipulation
-# Ground truth: likely_fake / RED
-# ═══════════════════════════════════════════════════════════════════
-
-TASK_MEDIUM = {
-    "task_id": "medium",
-    "difficulty": "medium",
-    "post_text": (
-        "New study reveals that sugar causes hyperactivity in children — doctors have "
-        "been hiding this from parents for years! The Daily Mail and ZeroHedge both "
-        "reported that Big Pharma is suppressing natural cures for ADHD. "
-        "Social media companies sell your data to pharmaceutical companies to push "
-        "medication on your kids. Shocking truth: 100% proven by independent researchers. "
-        "Share with everyone you love before this gets taken down!"
-    ),
-    "ground_truth": "likely_fake",
-    "ground_truth_alert": "RED",
-    "extracted_claims": [
-        "sugar causes hyperactivity in children",
-        "big pharma is suppressing natural cures",
-        "social media companies sell your data",
-        "doctors have been hiding this from parents",
-    ],
-    "sources": ["daily mail", "zerohedge"],
-    "virality_risk": "medium",
-    "expected_patterns": [
-        "big pharma hiding",
-        "shocking truth",
-        "100% proven",
-        "share with everyone you love",
-    ],
-    "expected_source_tier": "mixed",  # daily mail=medium, zerohedge=low
-    "description": (
-        "A medium-difficulty post that mixes partial truths (sugar-hyperactivity is debated, "
-        "social media data sharing is partially true) with clear misinformation "
-        "(suppressed cures). Sources are of mixed credibility. "
-        "Agent must cross-verify claims carefully to distinguish partial truths."
-    ),
+# Source credibility database (deterministic)
+SOURCE_CREDIBILITY: Dict[str, Dict[str, Any]] = {
+    "cdc.gov": {"credibility": 0.95, "tier": "government", "bias": "none"},
+    "who.int": {"credibility": 0.93, "tier": "international_org", "bias": "none"},
+    "nature.com": {"credibility": 0.97, "tier": "peer_reviewed", "bias": "none"},
+    "nejm.org": {"credibility": 0.96, "tier": "peer_reviewed", "bias": "none"},
+    "reuters.com": {"credibility": 0.88, "tier": "established_news", "bias": "low"},
+    "apnews.com": {"credibility": 0.90, "tier": "established_news", "bias": "low"},
+    "bbc.com": {"credibility": 0.87, "tier": "established_news", "bias": "low"},
+    "theguardian.com": {"credibility": 0.82, "tier": "established_news", "bias": "moderate"},
+    "foxnews.com": {"credibility": 0.55, "tier": "partisan_news", "bias": "high"},
+    "naturalnews.com": {"credibility": 0.05, "tier": "misinformation", "bias": "extreme"},
+    "infowars.com": {"credibility": 0.02, "tier": "misinformation", "bias": "extreme"},
+    "theonion.com": {"credibility": 0.10, "tier": "satire", "bias": "satire"},
+    "beforeitsnews.com": {"credibility": 0.03, "tier": "conspiracy", "bias": "extreme"},
+    "worldnewsdailyreport.com": {"credibility": 0.01, "tier": "fake_news_site", "bias": "extreme"},
+    "snopes.com": {"credibility": 0.85, "tier": "fact_check", "bias": "low"},
+    "politifact.com": {"credibility": 0.84, "tier": "fact_check", "bias": "low"},
+    "unknown_source": {"credibility": 0.30, "tier": "unknown", "bias": "unknown"},
+    "personal_blog": {"credibility": 0.20, "tier": "unverified", "bias": "unknown"},
+    "telegram_channel": {"credibility": 0.10, "tier": "social_media", "bias": "unknown"},
+    "anonymous_tipster": {"credibility": 0.05, "tier": "anonymous", "bias": "unknown"},
 }
 
-# ═══════════════════════════════════════════════════════════════════
-# TASK 3 — HARD
-# Post appears credible — cites real sources, uses measured language,
-# but embeds a dangerous false claim. No clickbait patterns.
-# Ground truth: suspicious / YELLOW
-# ═══════════════════════════════════════════════════════════════════
-
-TASK_HARD = {
-    "task_id": "hard",
-    "difficulty": "hard",
-    "post_text": (
-        "According to a Reuters analysis and WHO data, climate change is supported by "
-        "scientific consensus. However, a growing number of independent researchers "
-        "published in Nature argue that vaccines cause autism in genetically predisposed "
-        "children — a finding that has been quietly acknowledged by the CDC but not yet "
-        "publicly disclosed. The human body has 206 bones and drinking water is essential "
-        "for survival — these are facts everyone agrees on. The question is: why is the "
-        "CDC withholding vaccine-autism data from the public?"
-    ),
-    "ground_truth": "suspicious",
-    "ground_truth_alert": "YELLOW",
-    "extracted_claims": [
-        "climate change is supported by scientific consensus",
-        "vaccines cause autism in genetically predisposed children",
-        "the cdc is withholding vaccine-autism data",
-        "the human body has 206 bones",
-        "drinking water is essential for human survival",
-    ],
-    "sources": ["reuters", "who", "nature", "cdc"],
-    "virality_risk": "medium",
-    "expected_patterns": [],   # No obvious clickbait — this is the hard part
-    "expected_source_tier": "high",  # Legitimate sources cited — misleading!
-    "description": (
-        "A hard post that uses legitimate high-credibility sources (Reuters, WHO, Nature, CDC) "
-        "and mixes true verified claims with a dangerous false claim (vaccines-autism link). "
-        "No clickbait patterns are present. The agent must cross-verify every claim carefully "
-        "and not be misled by the credible sources cited alongside the false claim. "
-        "Correct classification is 'suspicious' — not 'fake' — because the post "
-        "contains both true and false claims, making it a partial-truth misinformation piece."
-    ),
-}
-
-# ═══════════════════════════════════════════════════════════════════
-# REGISTER ALL TASKS
-# ═══════════════════════════════════════════════════════════════════
-
-def load_all_tasks() -> None:
-    """Register all tasks into the environment task registry."""
-    register_task(TASK_EASY)
-    register_task(TASK_MEDIUM)
-    register_task(TASK_HARD)
-
-
-# Auto-register on import
-load_all_tasks()
-
-
-# ═══════════════════════════════════════════════════════════════════
-# TASK METADATA (used by openenv.yaml and README)
-# ═══════════════════════════════════════════════════════════════════
-
-TASK_METADATA = [
-    {
-        "task_id": "easy",
-        "difficulty": "easy",
-        "ground_truth": "fake",
-        "alert": "RED",
-        "virality": "high",
-        "num_claims": 3,
-        "num_sources": 1,
-        "description": TASK_EASY["description"],
-    },
-    {
-        "task_id": "medium",
-        "difficulty": "medium",
-        "ground_truth": "likely_fake",
-        "alert": "RED",
-        "virality": "medium",
-        "num_claims": 4,
-        "num_sources": 2,
-        "description": TASK_MEDIUM["description"],
-    },
-    {
-        "task_id": "hard",
-        "difficulty": "hard",
-        "ground_truth": "suspicious",
-        "alert": "YELLOW",
-        "virality": "medium",
-        "num_claims": 5,
-        "num_sources": 4,
-        "description": TASK_HARD["description"],
-    },
+# Linguistic patterns associated with fake news (deterministic)
+FAKE_PATTERNS: List[Dict[str, Any]] = [
+    {"pattern": "SHOCKING", "weight": 0.3, "category": "sensationalism"},
+    {"pattern": "THEY DON'T WANT YOU TO KNOW", "weight": 0.4, "category": "conspiracy"},
+    {"pattern": "SHARE BEFORE DELETED", "weight": 0.5, "category": "urgency_manipulation"},
+    {"pattern": "DOCTORS HATE THIS", "weight": 0.4, "category": "clickbait"},
+    {"pattern": "100% PROVEN", "weight": 0.35, "category": "false_certainty"},
+    {"pattern": "MAINSTREAM MEDIA WON'T TELL YOU", "weight": 0.4, "category": "conspiracy"},
+    {"pattern": "MIRACLE CURE", "weight": 0.45, "category": "health_misinformation"},
+    {"pattern": "WAKE UP SHEEPLE", "weight": 0.5, "category": "conspiracy"},
+    {"pattern": "WHAT THEY'RE HIDING", "weight": 0.35, "category": "conspiracy"},
+    {"pattern": "GOING VIRAL", "weight": 0.1, "category": "social_proof_manipulation"},
+    {"pattern": "THIS WILL CHANGE EVERYTHING", "weight": 0.25, "category": "sensationalism"},
+    {"pattern": "BANNED FROM TV", "weight": 0.45, "category": "suppression_claim"},
+    {"pattern": "NATURAL NEWS", "weight": 0.3, "category": "pseudoscience_source"},
+    {"pattern": "DEEP STATE", "weight": 0.35, "category": "conspiracy"},
+    {"pattern": "PLANDEMIC", "weight": 0.5, "category": "conspiracy"},
+    {"pattern": "GREAT RESET", "weight": 0.3, "category": "conspiracy"},
+    {"pattern": "NEW WORLD ORDER", "weight": 0.4, "category": "conspiracy"},
+    {"pattern": "GLOBALIST AGENDA", "weight": 0.4, "category": "conspiracy"},
+    {"pattern": "GOVERNMENT COVER-UP", "weight": 0.35, "category": "conspiracy"},
+    {"pattern": "PROVEN TO CURE", "weight": 0.45, "category": "health_misinformation"},
 ]
+
+
+# ─────────────────────────── Task Definitions ───────────────────────────
+
+TASKS: Dict[str, Dict[str, Any]] = {
+
+    # ─── EASY ───
+    "task_easy": {
+        "task_id": "task_easy",
+        "task_name": "Basic Fake News Detection",
+        "difficulty": "easy",
+        "description": (
+            "A social media post with obvious fake news markers has been flagged. "
+            "Your job: analyze the post, extract claims, check sources, and raise the correct alert. "
+            "This post contains clear conspiracy language, a blacklisted source, and a debunked claim."
+        ),
+        "post_id": "post_001",
+        "post_text": (
+            "🚨 SHOCKING: THEY DON'T WANT YOU TO KNOW THIS! Scientists at naturalnews.com "
+            "have PROVEN that COVID vaccines contain microchips that track your location! "
+            "100% PROVEN by whistleblowers! SHARE BEFORE DELETED! The government is hiding this "
+            "from you. WAKE UP SHEEPLE! #Plandemic #DeepState #VaccinesTruth"
+        ),
+        "ground_truth_label": Label.FAKE,
+        "ground_truth_alert": AlertLevel.RED,
+        "key_claims": [
+            "covid vaccines contain microchips",
+            "government is hiding vaccine information",
+        ],
+        "key_source": "naturalnews.com",
+        "expected_patterns": [
+            "SHOCKING", "THEY DON'T WANT YOU TO KNOW", "100% PROVEN",
+            "SHARE BEFORE DELETED", "WAKE UP SHEEPLE", "PLANDEMIC", "DEEP STATE"
+        ],
+        "max_steps": 6,
+        "required_actions": ["analyze_claim", "check_source", "raise_alert"],
+        "pass_threshold": 0.65,
+    },
+
+    # ─── MEDIUM ───
+    "task_medium": {
+        "task_id": "task_medium",
+        "task_name": "Partial Truth & Suspicious Content Detection",
+        "difficulty": "medium",
+        "description": (
+            "A social media post mixes real facts with misleading framing and unverified claims. "
+            "The source has moderate credibility. You must cross-verify claims, assess the partial "
+            "truth, and determine the correct label and alert level. "
+            "Avoid both over-alerting and under-alerting."
+        ),
+        "post_id": "post_002",
+        "post_text": (
+            "⚠️ BREAKING: New study shows that 5G towers emit radiation that may affect human "
+            "cells. While mainstream science claims it's safe, multiple independent researchers "
+            "disagree. A new report from 'independent-health-research.org' found concerning "
+            "correlations between 5G rollout areas and increased hospital admissions. "
+            "Exercise also helps with mental health – that part is true. "
+            "Share this with your family! #5GDanger #HealthAlert"
+        ),
+        "ground_truth_label": Label.LIKELY_FAKE,
+        "ground_truth_alert": AlertLevel.YELLOW,
+        "key_claims": [
+            "5g towers cause cancer",
+            "exercise improves mental health",
+            "independent study links 5g to hospital admissions",
+        ],
+        "key_source": "personal_blog",
+        "expected_patterns": ["BREAKING", "SHARE"],
+        "max_steps": 8,
+        "required_actions": ["analyze_claim", "check_source", "cross_verify", "raise_alert"],
+        "pass_threshold": 0.60,
+    },
+
+    # ─── HARD ───
+    "task_hard": {
+        "task_id": "task_hard",
+        "task_name": "Sophisticated Disinformation Campaign Detection",
+        "difficulty": "hard",
+        "description": (
+            "A sophisticated disinformation post designed to evade detection. "
+            "It uses credible-sounding language, mixes true and false claims, cites real "
+            "institutions misleadingly, and uses emotionally charged framing without obvious "
+            "fake-news patterns. The agent must: extract multiple layered claims, verify each "
+            "independently, assess source manipulation, detect subtle framing tricks, calibrate "
+            "confidence accurately, and produce a nuanced label. This post is designed to fool "
+            "frontier models — partial truths are used to lend credibility to a false central claim. "
+            "A wrong label here costs significant reward. Confidence calibration is tested."
+        ),
+        "post_id": "post_003",
+        "post_text": (
+            "📊 IMPORTANT HEALTH UPDATE: A peer-reviewed analysis published last month reveals "
+            "what health authorities aren't highlighting: while climate change IS caused by human "
+            "activity (IPCC confirmed), the same industrial chemicals responsible are also linked "
+            "to neurological damage in children at levels currently deemed 'safe' by the EPA. "
+            "The FDA-approved fluoride in your drinking water has been reclassified as a "
+            "'developmental neurotoxin' in a 2024 court ruling — yet water fluoridation continues. "
+            "Meanwhile, a Harvard meta-analysis found IQ reductions in high-fluoride areas. "
+            "Coffee drinkers may have health benefits, but the real question is: what else are "
+            "they not telling us? Source: telegram_channel/healthtruth2024 | Verify at: "
+            "beforeitsnews.com/fluoride-cover-up #WaterSafety #ChemicalExposure #HealthFreedom"
+        ),
+        "ground_truth_label": Label.FAKE,
+        "ground_truth_alert": AlertLevel.RED,
+        "key_claims": [
+            "climate change is caused by human activity",          # TRUE - used as credibility hook
+            "water fluoridation causes brain damage",              # FALSE - debunked
+            "exercise improves mental health",                     # TRUE - irrelevant injection
+            "new study suggests moderate coffee consumption has health benefits",  # LIKELY TRUE
+            "election results were manipulated",                   # CONTESTED - not in post but pattern
+            "government hiding alien contact",                     # not claimed but pattern test
+        ],
+        "key_source": "telegram_channel",
+        "secondary_source": "beforeitsnews.com",
+        "expected_patterns": ["GOVERNMENT COVER-UP"],
+        "max_steps": 10,
+        "required_actions": [
+            "analyze_claim", "analyze_claim", "check_source",
+            "cross_verify", "cross_verify", "raise_alert"
+        ],
+        "pass_threshold": 0.55,
+        "hard_mode_notes": (
+            "The post embeds 2 true claims (climate change, coffee benefits) to appear legitimate. "
+            "Central claim (fluoride brain damage) is false. Sources are low-credibility "
+            "(telegram_channel=0.10, beforeitsnews.com=0.01). "
+            "Agent must not be fooled by the true anchors and must detect the fake central claim."
+        ),
+    },
+}
+
+
+def get_task(task_id: str) -> Dict[str, Any]:
+    """Return task definition by ID."""
+    if task_id not in TASKS:
+        raise ValueError(f"Unknown task_id: {task_id}. Available: {list(TASKS.keys())}")
+    return TASKS[task_id]
+
+
+def list_tasks() -> List[str]:
+    """Return list of available task IDs."""
+    return list(TASKS.keys())
+
+
+def get_knowledge_verdict(claim: str) -> Optional[Dict[str, Any]]:
+    """
+    Look up a claim in the knowledge base (deterministic).
+    Returns verdict dict or None if unknown.
+    """
+    claim_lower = claim.lower().strip()
+    for key, value in KNOWLEDGE_BASE.items():
+        if key in claim_lower or claim_lower in key:
+            return {"claim": claim, "kb_key": key, **value}
+    # Fuzzy: check if any major keywords overlap
+    claim_words = set(claim_lower.split())
+    for key, value in KNOWLEDGE_BASE.items():
+        key_words = set(key.split())
+        overlap = claim_words & key_words
+        if len(overlap) >= 3:
+            return {"claim": claim, "kb_key": key, "partial_match": True, **value}
+    return None
+
+
+def check_source_credibility(source: str) -> Dict[str, Any]:
+    """Return credibility info for a source (deterministic)."""
+    source_lower = source.lower().strip()
+    for key, value in SOURCE_CREDIBILITY.items():
+        if key in source_lower or source_lower in key:
+            return {"source": source, **value}
+    return {"source": source, **SOURCE_CREDIBILITY["unknown_source"]}
+
+
+def detect_patterns(text: str) -> List[Dict[str, Any]]:
+    """Detect fake news linguistic patterns in text (deterministic)."""
+    text_upper = text.upper()
+    found = []
+    for p in FAKE_PATTERNS:
+        if p["pattern"] in text_upper:
+            found.append(p)
+    return found
