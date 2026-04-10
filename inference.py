@@ -19,8 +19,8 @@ from openai import OpenAI
 
 # ─────────────────────────── Config ───────────────────────────
 
-API_BASE_URL: str = os.environ.get("API_BASE_URL", "https://api-inference.huggingface.co/v1/")
-MODEL_NAME: str = os.environ.get("MODEL_NAME", "meta-llama/Llama-3.1-8B-Instruct")
+API_BASE_URL: str = os.environ.get("API_BASE_URL", "https://router.huggingface.co/v1/")
+MODEL_NAME: str = os.environ.get("MODEL_NAME", "Qwen/Qwen2.5-7B-Instruct")
 API_KEY: str = os.environ.get("HF_TOKEN", os.environ.get("OPENAI_API_KEY", "hf_placeholder"))
 
 BENCHMARK = "fakenews-detection-openenv-v1"

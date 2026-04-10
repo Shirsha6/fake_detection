@@ -1,6 +1,6 @@
 [build-system]
 requires = ["setuptools>=68", "wheel"]
-build-backend = "setuptools.backends.legacy:build"
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "fakenews-detection-openenv"
@@ -16,15 +16,21 @@ dependencies = [
     "openai>=1.40.0",
     "python-multipart>=0.0.9",
     "httpx>=0.27.0",
+    "openenv-core>=0.2.0",
 ]
+
+[project.scripts]
+server = "server.app:main"
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "httpx>=0.27.0"]
-[project.scripts]
-server = "server.app:main"
+
+[tool.openenv]
+name = "fakenews-detection-openenv"
+version = "1.0.0"
+
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["fakenews*", "server*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -2,142 +2,94 @@ name: fakenews-detection-openenv
 version: "1.0.0"
 description: >
   Social Media Fake News Detection Environment with Multi-Signal Alert System.
-  An OpenEnv-compliant reinforcement learning environment where AI agents
-  learn to detect fake news through step-based reasoning: claim extraction,
-  source verification, cross-checking, and alert generation.
-
+  An OpenEnv-compliant RL environment where AI agents learn to detect fake news
+  through step-based reasoning: claim extraction, source verification,
+  cross-checking, and GREEN/YELLOW/RED alert generation.
 author: "FakeNews Detection Team"
 license: MIT
+tags:
+  - fake-news
+  - content-moderation
+  - social-media
+  - fact-checking
+  - alert-system
+  - openenv
 
-# Environment metadata
-environment:
-  id: fakenews-detection-v1
-  type: text
-  domain: content-moderation
-  tags:
-    - fake-news
-    - fact-checking
-    - content-moderation
-    - social-media
-    - alert-system
-    - multi-signal
-
-# Tasks
 tasks:
   - id: task_easy
-    name: "Basic Fake News Detection"
+    name: Basic Fake News Detection
     difficulty: easy
-    max_steps: 6
-    pass_threshold: 0.65
     description: >
       Detect obvious fake news with clear conspiracy language,
-      blacklisted sources, and debunked claims.
+      blacklisted sources (naturalnews.com), and debunked claims.
+    max_steps: 6
+    pass_threshold: 0.65
 
   - id: task_medium
-    name: "Partial Truth & Suspicious Content Detection"
+    name: Partial Truth and Suspicious Content Detection
     difficulty: medium
+    description: >
+      Detect a post that mixes real facts with misleading framing and
+      unverified claims. Agent must avoid over-alerting and under-alerting.
     max_steps: 8
     pass_threshold: 0.60
-    description: >
-      Detect mixed-truth posts that combine real facts with misleading
-      framing and unverified claims. Avoid over/under-alerting.
 
   - id: task_hard
-    name: "Sophisticated Disinformation Campaign Detection"
+    name: Sophisticated Disinformation Campaign Detection
     difficulty: hard
+    description: >
+      Detect sophisticated disinformation using true claims as credibility
+      anchors while embedding a false central claim. Tests confidence
+      calibration and resistance to partial-truth manipulation.
     max_steps: 10
     pass_threshold: 0.55
-    description: >
-      Detect sophisticated disinformation that uses credible anchors,
-      partial truths, and institutional name-dropping to disguise a
-      false central claim. Tests confidence calibration.
 
-# Action space
 actions:
   - name: analyze_claim
     description: Extract and analyze a claim from the social media post
-    parameters:
-      target: string  # the claim text to analyze
-      reasoning: string  # optional reasoning
-
   - name: check_source
     description: Check the credibility of a source mentioned in the post
-    parameters:
-      target: string  # source URL or name
-
   - name: cross_verify
     description: Cross-verify a claim against the knowledge base
-    parameters:
-      target: string  # claim to verify
-
   - name: raise_alert
-    description: Raise a final alert with a fake news label
-    parameters:
-      final_label: enum[fake, likely_fake, suspicious, unknown]
-      confidence: float  # 0.0-1.0
-
+    description: Raise a final alert with a fake news classification label
   - name: mark_safe
-    description: Mark the post as real/safe
-    parameters:
-      final_label: enum[real]
-      confidence: float  # 0.0-1.0
+    description: Mark the post as real and safe
 
-# Observation space
-observation:
-  post_id: string
-  post_text: string
-  task_description: string
-  step_number: integer
-  max_steps: integer
-  claims_extracted: list[string]
-  sources_checked: list[object]
-  patterns_detected: list[string]
-  cross_verifications: list[object]
-  current_fake_score: float  # 0.0-1.0
-  current_alert: enum[GREEN, YELLOW, RED]
-  available_actions: list[string]
-  message: string
+observation_space:
+  type: object
+  properties:
+    post_id: string
+    post_text: string
+    task_description: string
+    step_number: integer
+    max_steps: integer
+    claims_extracted: array
+    sources_checked: array
+    patterns_detected: array
+    cross_verifications: array
+    current_fake_score: float
+    current_alert: string
+    available_actions: array
+    message: string
 
-# Reward
-reward:
-  range: [-1.0, 1.0]
-  components:
-    - detection_accuracy: "Reward for correct label detection (40%)"
-    - alert_correctness: "Reward for correct alert level (25%)"
-    - efficiency: "Penalty for unnecessary steps"
-    - confidence_calibration: "Reward for calibrated confidence"
+reward_space:
+  min: -1.0
+  max: 1.0
   partial_rewards: true
-  sparse: false
+  description: >
+    Partial rewards throughout trajectory. Components include detection
+    accuracy, alert correctness, evidence quality, action coverage,
+    and efficiency. Severe penalties for marking fake posts as safe.
 
-# API endpoints
-endpoints:
-  reset:
-    method: POST
-    path: /reset
-    body:
-      task_id: string
-  step:
-    method: POST
-    path: /step
-    body:
-      action_type: string
-      target: string
-      reasoning: string
-      final_label: string
-      confidence: float
-      task_id: string
-  state:
-    method: GET
-    path: /state
-    query:
-      task_id: string
-
-# Deployment
-deployment:
-  platform: huggingface-spaces
-  framework: docker
+server:
   port: 7860
-  runtime:
-    vcpu: 2
-    memory_gb: 8
-  inference_timeout_minutes: 20
+  endpoints:
+    - path: /reset
+      method: POST
+    - path: /step
+      method: POST
+    - path: /state
+      method: GET
+    - path: /health
+      method: GET
