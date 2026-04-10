@@ -1,51 +1,14 @@
-# pyproject.toml — FakeNews Detection OpenEnv
-# Fixes for openenv validate:
-#   1. [project.scripts] now has a 'server' entry pointing to server.app:main
-#   2. openenv-core>=0.2.0 added to dependencies
-#   3. server/app.py created with main() function
-#   4. server/app.py has if __name__ == '__main__' block
-
-# ─────────────────────────────────────────────
-# BUILD SYSTEM
-# ─────────────────────────────────────────────
-
 [build-system]
 requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name            = "fakenews-detection-env"
-version         = "0.2.3"
-description     = "Social Media Fake News Detection RL Environment for OpenEnv"
-readme          = "README.md"
-license         = "MIT"
-requires-python = ">=3.11"
-
-authors = [
-  { name = "Team OpenEnv Hackathon" }
-]
-
-keywords = [
-  "openenv",
-  "fake-news",
-  "misinformation",
-  "reinforcement-learning",
-  "social-media",
-  "rl-environment",
-  "agent-evaluation",
-]
-
-classifiers = [
-  "Development Status :: 4 - Beta",
-  "Intended Audience :: Developers",
-  "Intended Audience :: Science/Research",
-  "Topic :: Scientific/Engineering :: Artificial Intelligence",
-  "Programming Language :: Python :: 3",
-  "Programming Language :: Python :: 3.11",
-  "Operating System :: OS Independent",
-]
-
-# ── FIX 2: openenv-core>=0.2.0 added ─────────
+name = "fakenews-detection-openenv"
+version = "1.0.0"
+description = "Social Media Fake News Detection Environment with Alert System — OpenEnv compliant"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
 dependencies = [
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.30.6",

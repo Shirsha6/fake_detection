@@ -1,517 +1,454 @@
 """
-env.py — 
-
-Actions:
-    analyze_claim  — investigate a specific claim
-    check_source   — look up source credibility
-    cross_verify   — cross-check all claims
-    raise_alert    — terminal: classify as fake/suspicious
-    mark_safe      — terminal: classify as real/safe
-
-Fully self-contained — only depends on models.py and rewards.py.
+Core FakeNews Detection Environment.
+Implements OpenEnv spec: reset(), step(), state()
+with typed Pydantic models and deterministic logic.
 """
-
 from __future__ import annotations
-
-import copy
 from typing import Any, Dict, List, Optional
+import copy
 
 from models import (
-    Action,
-    AlertLevel,
-    ClassificationLabel,
-    EpisodeState,
-    Observation,
-    StepResult,
+    Action, ActionType, Observation, Reward, EnvState,
+    StepResult, ResetResult, Label, AlertLevel
 )
-from rewards import FakeNewsDetector, RewardComputer
-
-# ─────────────────────────────────────────────
-# CONSTANTS
-# ─────────────────────────────────────────────
-
-MAX_STEPS = 10   # Step 4 original value
-
-ALERT_SEVERITY: Dict[AlertLevel, int] = {
-    "GREEN": 0,
-    "YELLOW": 1,
-    "RED": 2,
-}
-
-LABEL_TO_EXPECTED_ALERT: Dict[ClassificationLabel, AlertLevel] = {
-    "real":        "GREEN",
-    "fake":        "RED",
-    "likely_fake": "RED",
-    "suspicious":  "YELLOW",
-    "unknown":     "YELLOW",
-}
+from tasks import (
+    get_task, detect_patterns, get_knowledge_verdict,
+    check_source_credibility, list_tasks
+)
+from rewards import RewardCalculator
+from grader import grade_episode
 
 
-# ─────────────────────────────────────────────
-# TASK REGISTRY
-# ─────────────────────────────────────────────
+# ─────────────────────────── Alert Logic ───────────────────────────
 
-TASK_REGISTRY: Dict[str, Dict[str, Any]] = {}
+def _compute_alert(fake_score: float, sources_checked: List[Dict]) -> AlertLevel:
+    """
+    Deterministic alert level from fake score and source signals.
+    GREEN  → fake_score < 0.35 and no blacklisted sources
+    YELLOW → 0.35 ≤ fake_score < 0.65 or suspicious sources
+    RED    → fake_score ≥ 0.65 or blacklisted sources found
+    """
+    blacklisted_tiers = {"misinformation", "fake_news_site", "conspiracy", "anonymous"}
+    has_blacklisted = any(
+        s.get("tier", "") in blacklisted_tiers
+        for s in sources_checked
+    )
+
+    if fake_score >= 0.65 or (has_blacklisted and fake_score >= 0.4):
+        return AlertLevel.RED
+    elif fake_score >= 0.35 or has_blacklisted:
+        return AlertLevel.YELLOW
+    else:
+        return AlertLevel.GREEN
 
 
-def register_task(task: Dict[str, Any]) -> None:
-    """Register a task into the global task registry."""
-    TASK_REGISTRY[task["task_id"]] = task
+def _compute_fake_score(
+    patterns: List[Dict],
+    sources: List[Dict],
+    verifications: List[Dict],
+    claims: List[str],
+) -> float:
+    """
+    Aggregate fake score from all signals (deterministic, 0.0–1.0).
+    """
+    score = 0.0
+    components = 0
+
+    # Pattern signal (max weight 0.5)
+    if patterns:
+        pattern_weight = min(1.0, sum(p["weight"] for p in patterns))
+        score += pattern_weight * 0.35
+        components += 1
+
+    # Source credibility signal (inverted, low credibility = high fake score)
+    if sources:
+        avg_cred = sum(s.get("credibility", 0.5) for s in sources) / len(sources)
+        source_signal = 1.0 - avg_cred
+        score += source_signal * 0.35
+        components += 1
+
+    # Knowledge base verification signal
+    if verifications:
+        false_count = sum(
+            1 for v in verifications
+            if v.get("verdict") in ("false",)
+        )
+        true_count = sum(
+            1 for v in verifications
+            if v.get("verdict") in ("true", "likely_true")
+        )
+        if false_count + true_count > 0:
+            kb_signal = false_count / (false_count + true_count + 0.001)
+            score += kb_signal * 0.30
+            components += 1
+
+    if components == 0:
+        return 0.3  # Default uncertain
+
+    return min(1.0, score)
 
 
-# ─────────────────────────────────────────────
-# ENVIRONMENT CLASS
-# ─────────────────────────────────────────────
+# ─────────────────────────── Environment ───────────────────────────
 
 class FakeNewsEnv:
     """
-    OpenEnv-compliant Fake News Detection Environment.
-
-    Implements the three required OpenEnv methods:
-        reset(task_id)  → Observation
-        step(action)    → StepResult
-        state()         → EpisodeState
-
-    No external dependencies beyond models.py and rewards.py.
+    Social Media Fake News Detection Environment.
+    
+    OpenEnv-compliant environment for training and evaluating
+    AI agents on multi-signal fake news detection tasks.
     """
 
-    def __init__(self) -> None:
-        self._state:     Optional[EpisodeState]  = None
-        self._task_data: Optional[Dict[str, Any]] = None
+    AVAILABLE_ACTIONS = [
+        ActionType.ANALYZE_CLAIM.value,
+        ActionType.CHECK_SOURCE.value,
+        ActionType.CROSS_VERIFY.value,
+        ActionType.RAISE_ALERT.value,
+        ActionType.MARK_SAFE.value,
+    ]
 
-        # Core detection + reward engines
-        self._detector = FakeNewsDetector()
-        self._rewarder = RewardComputer()
+    def __init__(self, task_id: str = "task_easy"):
+        self._task_id = task_id
+        self._task: Dict[str, Any] = get_task(task_id)
+        self._state: Optional[EnvState] = None
+        self._reward_calc: Optional[RewardCalculator] = None
+        self._grade_result: Optional[Dict[str, Any]] = None
 
-        # Per-episode tracking (reset on each reset() call)
-        self._analyzed_claims:   List[str]       = []
-        self._checked_sources:   List[str]       = []
-        self._cross_verified:    bool             = False
+    # ─── OpenEnv Interface ───
 
-        # Live observation caches
-        self._live_source_info:   Dict[str, Any]  = {}
-        self._live_pattern_flags: List[str]       = []
-        self._live_known_claims:  Dict[str, bool] = {}
-
-    # ──────────────────────────────────────────
-    # PUBLIC API — required by OpenEnv spec
-    # ──────────────────────────────────────────
-
-    def reset(self, task_id: str = "easy") -> Observation:
+    def reset(self) -> ResetResult:
         """
-        Start a fresh episode for the given task.
-
-        Parameters
-        ----------
-        task_id : str  — one of the registered task ids (easy / medium / hard …)
-
-        Returns
-        -------
-        Observation  — initial observation (step 0, no actions taken)
+        Reset the environment to initial state.
+        Returns initial observation.
         """
-        if task_id not in TASK_REGISTRY:
-            raise ValueError(
-                f"Task '{task_id}' not found. "
-                f"Available: {list(TASK_REGISTRY.keys())}"
-            )
+        task = self._task
+        self._reward_calc = RewardCalculator(task)
+        self._grade_result = None
 
-        task = TASK_REGISTRY[task_id]
-        self._task_data = copy.deepcopy(task)
-
-        # Reset all per-episode state
-        self._analyzed_claims    = []
-        self._checked_sources    = []
-        self._cross_verified     = False
-        self._live_source_info   = {}
-        self._live_pattern_flags = []
-        self._live_known_claims  = {}
-
-        # Passive pattern detection on reset (no reward, just pre-populate flags)
-        pattern_result = self._detector.detect_patterns(task["post_text"])
-        self._live_pattern_flags = pattern_result["flags"]
-
-        # Build EpisodeState — handles both old models.py (3 tasks) and
-        # upgraded models.py (with extra fields like fake_intensity etc.)
-        state_kwargs: Dict[str, Any] = dict(
-            task_id=task_id,
+        self._state = EnvState(
+            task_id=task["task_id"],
+            task_name=task["task_name"],
+            post_id=task["post_id"],
             post_text=task["post_text"],
-            ground_truth=task["ground_truth"],
+            ground_truth_label=task["ground_truth_label"],
             ground_truth_alert=task["ground_truth_alert"],
             step_number=0,
-            max_steps=MAX_STEPS,
-            cumulative_reward=0.0,
-            actions_taken=[],
-            current_label=None,
-            current_alert=None,
-            confidence=0.0,
-            fake_score=0.0,
+            max_steps=task["max_steps"],
             done=False,
+            claims_extracted=[],
+            sources_checked=[],
+            patterns_detected=[],
+            cross_verifications=[],
+            current_fake_score=0.0,
+            current_alert=AlertLevel.GREEN,
+            final_label=None,
+            final_alert=None,
+            episode_rewards=[],
+            total_reward=0.0,
+            agent_actions=[],
         )
 
-        # Safely add upgraded fields if the model supports them
-        # (so this file works with BOTH the old and new models.py)
-        try:
-            from models import EpisodeState as _ES
-            _fields = _ES.model_fields
-            if "fake_intensity"             in _fields: state_kwargs["fake_intensity"]             = 0.0
-            if "viral_score"                in _fields: state_kwargs["viral_score"]                = 0.0
-            if "reports_count"              in _fields: state_kwargs["reports_count"]              = task.get("reports_count", 0)
-            if "wait_count"                 in _fields: state_kwargs["wait_count"]                 = 0
-            if "virality_penalty_accumulator" in _fields: state_kwargs["virality_penalty_accumulator"] = 0.0
-            if "link_scanned"               in _fields: state_kwargs["link_scanned"]               = False
-        except Exception:
-            pass  # old models.py — skip extra fields
-
-        self._state = EpisodeState(**state_kwargs)
-
-        return self._build_initial_observation()
+        obs = self._build_observation()
+        return ResetResult(
+            observation=obs,
+            info={"task_id": task["task_id"], "difficulty": task["difficulty"]},
+        )
 
     def step(self, action: Action) -> StepResult:
         """
-        Process one agent action and advance the episode.
-
-        Parameters
-        ----------
-        action : Action
-
-        Returns
-        -------
-        StepResult — (observation, reward, done, info)
+        Execute one step in the environment.
+        Returns (observation, reward, done, info).
         """
         if self._state is None:
             raise RuntimeError("Call reset() before step().")
         if self._state.done:
-            raise RuntimeError("Episode already done. Call reset().")
+            raise RuntimeError("Episode is done. Call reset() to start a new episode.")
 
         self._state.step_number += 1
-        self._state.actions_taken.append(action.model_dump())
+        action_result = self._execute_action(action)
+        reward_obj = self._reward_calc.step_reward(action, self._state, action_result)
 
-        reward, feedback = self._handle_action(action)
-        self._state.cumulative_reward += reward
+        # Update state
+        self._state.total_reward += reward_obj.total
+        self._state.episode_rewards.append(reward_obj.total)
+        self._state.agent_actions.append({
+            "action_type": action.action_type.value,
+            "target": action.target,
+            "reasoning": action.reasoning,
+            "final_label": action.final_label.value if action.final_label else None,
+            "confidence": action.confidence,
+            "step": self._state.step_number,
+        })
 
-        is_terminal = action.action_type in ("raise_alert", "mark_safe")
-        step_limit  = self._state.step_number >= self._state.max_steps
+        # Check done conditions
+        done = self._check_done(action)
+        self._state.done = done
 
-        if is_terminal or step_limit:
-            self._state.done = True
-            if step_limit and not is_terminal:
-                timeout_penalty = -0.3
-                reward += timeout_penalty
-                self._state.cumulative_reward += timeout_penalty
-                feedback += " | Step limit reached without decision — penalty applied."
+        if done:
+            self._grade_result = grade_episode(self._state, self._task)
+            # Add final episode bonus
+            bonus = self._reward_calc.episode_bonus(self._state)
+            self._state.total_reward += bonus
+            self._state.episode_rewards.append(bonus)
 
-        observation = self._build_observation(feedback)
+        obs = self._build_observation()
+
+        info = {
+            "action_result": action_result,
+            "reward_breakdown": reward_obj.model_dump(),
+            "step_number": self._state.step_number,
+            "current_fake_score": self._state.current_fake_score,
+            "current_alert": self._state.current_alert.value,
+        }
+        if done and self._grade_result:
+            info["grade_result"] = self._grade_result
+
         return StepResult(
-            observation=observation,
-            reward=round(reward, 4),
-            done=self._state.done,
-            info={
-                "step_number":       self._state.step_number,
-                "cumulative_reward": round(self._state.cumulative_reward, 4),
-                "task_id":           self._state.task_id,
-                "is_terminal":       self._state.done,
-            },
+            observation=obs,
+            reward=reward_obj.total,
+            reward_details=reward_obj,
+            done=done,
+            info=info,
         )
 
-    def state(self) -> EpisodeState:
-        """
-        Return the full internal state.
-        Includes ground_truth — used by grader, never exposed to agent in obs.
-
-        Returns
-        -------
-        EpisodeState — deep copy of current state
-        """
+    def state(self) -> EnvState:
+        """Return current full state of the environment."""
         if self._state is None:
-            raise RuntimeError("Call reset() before state().")
+            raise RuntimeError("Call reset() first.")
         return copy.deepcopy(self._state)
 
-    # ──────────────────────────────────────────
-    # ACTION HANDLERS
-    # ──────────────────────────────────────────
+    # ─── Action Execution ───
 
-    def _handle_action(self, action: Action) -> tuple[float, str]:
-        """Route action to the correct handler."""
-        handlers = {
-            "analyze_claim": self._handle_analyze_claim,
-            "check_source":  self._handle_check_source,
-            "cross_verify":  self._handle_cross_verify,
-            "raise_alert":   self._handle_raise_alert,
-            "mark_safe":     self._handle_mark_safe,
+    def _execute_action(self, action: Action) -> Dict[str, Any]:
+        """Execute the action and update internal state. Deterministic."""
+        result: Dict[str, Any] = {"action_type": action.action_type.value}
+
+        if action.action_type == ActionType.ANALYZE_CLAIM:
+            result.update(self._do_analyze_claim(action))
+
+        elif action.action_type == ActionType.CHECK_SOURCE:
+            result.update(self._do_check_source(action))
+
+        elif action.action_type == ActionType.CROSS_VERIFY:
+            result.update(self._do_cross_verify(action))
+
+        elif action.action_type == ActionType.RAISE_ALERT:
+            result.update(self._do_raise_alert(action))
+
+        elif action.action_type == ActionType.MARK_SAFE:
+            result.update(self._do_mark_safe(action))
+
+        # Recompute fake score and alert
+        self._state.current_fake_score = _compute_fake_score(
+            [{"weight": 0.3} for _ in self._state.patterns_detected],
+            self._state.sources_checked,
+            self._state.cross_verifications,
+            self._state.claims_extracted,
+        )
+        self._state.current_alert = _compute_alert(
+            self._state.current_fake_score,
+            self._state.sources_checked,
+        )
+
+        return result
+
+    def _do_analyze_claim(self, action: Action) -> Dict[str, Any]:
+        """Extract and analyze a claim from the post."""
+        post = self._state.post_text
+        target = action.target or post
+
+        # Extract key claim text
+        claim = target[:200] if len(target) > 200 else target
+
+        # Detect patterns in the full post
+        patterns = detect_patterns(post)
+        new_pattern_names = [p["pattern"] for p in patterns]
+        for p in new_pattern_names:
+            if p not in self._state.patterns_detected:
+                self._state.patterns_detected.append(p)
+
+        # Look up claim in knowledge base
+        kb_verdict = get_knowledge_verdict(claim)
+
+        if claim not in self._state.claims_extracted:
+            self._state.claims_extracted.append(claim)
+
+        return {
+            "claim_analyzed": claim,
+            "patterns_found": new_pattern_names,
+            "kb_verdict": kb_verdict,
+            "patterns_count": len(new_pattern_names),
         }
-        handler = handlers.get(action.action_type)
-        if handler is None:
-            return -0.1, f"Unknown action type: {action.action_type}"
-        return handler(action)
 
-    def _handle_analyze_claim(self, action: Action) -> tuple[float, str]:
-        """Check a specific claim against the knowledge base."""
-        target       = action.target_claim or ""
-        claim_result = self._detector.check_claim(target)
+    def _do_check_source(self, action: Action) -> Dict[str, Any]:
+        """Check credibility of a source."""
+        source = action.target or self._task.get("key_source", "unknown_source")
+        cred_info = check_source_credibility(source)
 
-        reward, feedback = self._rewarder.reward_analyze_claim(
-            claim_result=claim_result,
-            already_analyzed=self._analyzed_claims,
-            target_claim=target,
+        # Avoid duplicate source checks
+        already_checked = any(
+            s.get("source", "") == source
+            for s in self._state.sources_checked
         )
+        if not already_checked:
+            self._state.sources_checked.append(cred_info)
 
-        if target and target not in self._analyzed_claims:
-            self._analyzed_claims.append(target)
+        return {
+            "source_checked": source,
+            "credibility": cred_info.get("credibility", 0.5),
+            "tier": cred_info.get("tier", "unknown"),
+            "bias": cred_info.get("bias", "unknown"),
+        }
 
-        if claim_result["found"]:
-            self._live_known_claims[target] = True
-
-        self._recompute_fake_score()
-        self._update_confidence()
-        return reward, feedback
-
-    def _handle_check_source(self, action: Action) -> tuple[float, str]:
-        """Look up the credibility of a named source."""
-        source        = action.source_name or ""
-        source_result = self._detector.get_source_credibility(source)
-
-        reward, feedback = self._rewarder.reward_check_source(
-            source_result=source_result,
-            already_checked=self._checked_sources,
-            source_name=source,
+    def _do_cross_verify(self, action: Action) -> Dict[str, Any]:
+        """Cross-verify a claim against the knowledge base."""
+        target = action.target or (
+            self._state.claims_extracted[-1]
+            if self._state.claims_extracted else self._state.post_text
         )
+        kb_verdict = get_knowledge_verdict(target)
 
-        if source and source not in self._checked_sources:
-            self._checked_sources.append(source)
-            self._live_source_info[source] = source_result
+        verified = False
+        contradiction_found = False
 
-        self._recompute_fake_score()
-        self._update_confidence()
-        return reward, feedback
+        if kb_verdict:
+            verified = True
+            if kb_verdict.get("verdict") in ("false",):
+                contradiction_found = True
+            verification_entry = {
+                "claim": target,
+                "verdict": kb_verdict.get("verdict", "unverifiable"),
+                "sources": kb_verdict.get("sources", []),
+                "explanation": kb_verdict.get("explanation", ""),
+                "contradiction_found": contradiction_found,
+            }
+            # Avoid duplicates
+            existing = [v.get("claim") for v in self._state.cross_verifications]
+            if target not in existing:
+                self._state.cross_verifications.append(verification_entry)
+        else:
+            verification_entry = {
+                "claim": target,
+                "verdict": "unverifiable",
+                "sources": [],
+                "explanation": "Claim not found in knowledge base.",
+                "contradiction_found": False,
+            }
+            existing = [v.get("claim") for v in self._state.cross_verifications]
+            if target not in existing:
+                self._state.cross_verifications.append(verification_entry)
 
-    def _handle_cross_verify(self, action: Action) -> tuple[float, str]:
-        """Cross-verify all extracted claims at once."""
-        target    = action.target_claim or ""
-        extracted = self._task_data.get("extracted_claims", [])
+        return {
+            "verified": verified,
+            "contradiction_found": contradiction_found,
+            "verdict": kb_verdict.get("verdict") if kb_verdict else "unverifiable",
+            "kb_result": kb_verdict,
+        }
 
-        cross_result = self._detector.cross_verify(target, extracted)
+    def _do_raise_alert(self, action: Action) -> Dict[str, Any]:
+        """Raise a final alert with label."""
+        label = action.final_label or Label.SUSPICIOUS
+        alert = AlertLevel.RED if label == Label.FAKE else \
+                AlertLevel.YELLOW if label in (Label.LIKELY_FAKE, Label.SUSPICIOUS) else \
+                AlertLevel.GREEN
 
-        reward, feedback = self._rewarder.reward_cross_verify(
-            cross_result=cross_result,
-            already_cross_verified=self._cross_verified,
-        )
-
-        self._cross_verified = True
-
-        for r in cross_result.get("results", []):
-            self._live_known_claims[r["claim"]] = r["found"]
-
-        self._recompute_fake_score()
-        self._update_confidence()
-        return reward, feedback
-
-    def _handle_raise_alert(self, action: Action) -> tuple[float, str]:
-        """Terminal action — classify as fake/suspicious and raise alert."""
-        if action.classification is None or action.alert_level is None:
-            return -0.2, "raise_alert requires both 'classification' and 'alert_level'."
-
-        self._state.current_label = action.classification
-        self._state.current_alert = action.alert_level
-
-        if action.reasoning:
-            self._state.confidence = min(self._state.confidence + 0.05, 1.0)
-
-        reward, feedback = self._rewarder.reward_terminal(
-            agent_label=action.classification,
-            agent_alert=action.alert_level,
-            ground_truth=self._state.ground_truth,
-            ground_truth_alert=self._state.ground_truth_alert,
-            step_number=self._state.step_number,
-            max_steps=self._state.max_steps,
-            confidence=self._state.confidence,
-        )
-        return reward, feedback
-
-    def _handle_mark_safe(self, action: Action) -> tuple[float, str]:
-        """Terminal action — classify as real/safe."""
-        label: ClassificationLabel = action.classification or "real"
-        alert: AlertLevel          = action.alert_level or "GREEN"
-
-        self._state.current_label = label
+        self._state.final_label = label
+        self._state.final_alert = alert
         self._state.current_alert = alert
 
-        reward, feedback = self._rewarder.reward_terminal(
-            agent_label=label,
-            agent_alert=alert,
-            ground_truth=self._state.ground_truth,
-            ground_truth_alert=self._state.ground_truth_alert,
-            step_number=self._state.step_number,
-            max_steps=self._state.max_steps,
-            confidence=self._state.confidence,
-        )
-        return reward, feedback
+        return {
+            "final_label": label.value,
+            "final_alert": alert.value,
+            "action": "alert_raised",
+        }
 
-    # ──────────────────────────────────────────
-    # INTERNAL HELPERS
-    # ──────────────────────────────────────────
+    def _do_mark_safe(self, action: Action) -> Dict[str, Any]:
+        """Mark the post as safe/real."""
+        label = action.final_label or Label.REAL
+        self._state.final_label = label
+        self._state.final_alert = AlertLevel.GREEN
+        self._state.current_alert = AlertLevel.GREEN
 
-    def _recompute_fake_score(self) -> None:
-        """Recompute multi-signal fake score after every investigation step."""
-        task = self._task_data
+        return {
+            "final_label": label.value,
+            "final_alert": AlertLevel.GREEN.value,
+            "action": "marked_safe",
+        }
 
-        # Check if reward_terminal accepts reports_count (upgraded rewards.py)
-        try:
-            result = self._detector.compute_fake_score(
-                post_text=task["post_text"],
-                extracted_claims=self._analyzed_claims or task.get("extracted_claims", []),
-                sources=self._checked_sources or task.get("sources", []),
-                virality_risk=task.get("virality_risk", "low"),
-                reports_count=task.get("reports_count", 0),
+    # ─── Done Logic ───
+
+    def _check_done(self, action: Action) -> bool:
+        """Episode ends when agent raises alert/marks safe, or max steps reached."""
+        if action.action_type in (ActionType.RAISE_ALERT, ActionType.MARK_SAFE):
+            return True
+        if self._state.step_number >= self._state.max_steps:
+            # Auto-mark if no final verdict
+            if self._state.final_label is None:
+                # Use current signal to guess
+                score = self._state.current_fake_score
+                if score >= 0.65:
+                    self._state.final_label = Label.FAKE
+                    self._state.final_alert = AlertLevel.RED
+                elif score >= 0.35:
+                    self._state.final_label = Label.SUSPICIOUS
+                    self._state.final_alert = AlertLevel.YELLOW
+                else:
+                    self._state.final_label = Label.UNKNOWN
+                    self._state.final_alert = AlertLevel.GREEN
+            return True
+        return False
+
+    # ─── Observation Builder ───
+
+    def _build_observation(self) -> Observation:
+        """Build observation from current state."""
+        s = self._state
+        step = s.step_number
+        max_s = s.max_steps
+
+        if step == 0:
+            msg = (
+                f"New task: {s.task_name}. "
+                f"Analyze the following post and determine if it is fake news. "
+                f"You have {max_s} steps. Start with analyze_claim or check_source."
             )
-        except TypeError:
-            # Old rewards.py without reports_count param
-            result = self._detector.compute_fake_score(
-                post_text=task["post_text"],
-                extracted_claims=self._analyzed_claims or task.get("extracted_claims", []),
-                sources=self._checked_sources or task.get("sources", []),
-                virality_risk=task.get("virality_risk", "low"),
+        elif s.done:
+            msg = (
+                f"Episode complete. Final label: {s.final_label.value if s.final_label else 'N/A'}. "
+                f"Alert: {s.final_alert.value if s.final_alert else 'N/A'}. "
+                f"Total reward: {s.total_reward:.3f}."
             )
-
-        self._state.fake_score    = result["fake_score"]
-        self._live_pattern_flags  = result["flags"]
-
-        # Set fake_intensity if the state model supports it
-        if hasattr(self._state, "fake_intensity"):
-            self._state.fake_intensity = result["fake_score"]
-
-        classification = self._detector.classify(
-            fake_score=result["fake_score"],
-            claim_results=result["claim_results"],
-            source_info=result["source_info"],
-            flags=result["flags"],
-        )
-        self._state.confidence = classification["confidence"]
-
-    def _update_confidence(self) -> None:
-        """Grow confidence as more signals are gathered."""
-        signals = (
-            len(self._analyzed_claims) +
-            len(self._checked_sources) +
-            (1 if self._cross_verified else 0)
-        )
-        investigation_confidence = min(signals * 0.08, 0.90)
-        self._state.confidence   = round(
-            max(self._state.confidence, investigation_confidence), 3
-        )
-
-    # ──────────────────────────────────────────
-    # OBSERVATION BUILDERS
-    # ──────────────────────────────────────────
-
-    def _build_initial_observation(self) -> Observation:
-        """Build the observation returned by reset() — no actions taken yet."""
-        task = self._task_data
-
-        # Base kwargs that every version of Observation supports
-        obs_kwargs: Dict[str, Any] = dict(
-            post_text=task["post_text"],
-            extracted_claims=task.get("extracted_claims", []),
-            source_info={},
-            pattern_flags=self._live_pattern_flags,
-            virality_risk=task.get("virality_risk", "low"),
-            known_claims={},
-            current_label=None,
-            current_alert=None,
-            confidence=0.0,
-            fake_score=0.0,
-            step_feedback=(
-                "Episode started. Use analyze_claim, check_source, "
-                "cross_verify to investigate. Then raise_alert or mark_safe."
-            ),
-            step_number=0,
-            done_hint=False,
-            available_actions=[
-                "analyze_claim",
-                "check_source",
-                "cross_verify",
-                "raise_alert",
-                "mark_safe",
-            ],
-        )
-
-        # Add upgraded Observation fields only if the model supports them
-        self._add_upgraded_obs_fields(obs_kwargs, step=0)
-
-        return Observation(**obs_kwargs)
-
-    def _build_observation(self, feedback: str) -> Observation:
-        """Build the observation returned after each step()."""
-        s    = self._state
-        task = self._task_data
-
-        if s.done:
-            available = []
         else:
-            available = ["analyze_claim", "check_source", "cross_verify"]
-            if s.step_number >= 1:
-                available += ["raise_alert", "mark_safe"]
+            remaining = max_s - step
+            msg = (
+                f"Step {step}/{max_s} ({remaining} remaining). "
+                f"Current fake score: {s.current_fake_score:.2f}. "
+                f"Alert: {s.current_alert.value}. "
+                f"Claims extracted: {len(s.claims_extracted)}. "
+                f"Sources checked: {len(s.sources_checked)}. "
+                f"Use raise_alert or mark_safe to finalize."
+            )
 
-        done_hint = s.step_number >= int(0.8 * s.max_steps)
-
-        obs_kwargs: Dict[str, Any] = dict(
-            post_text=task["post_text"],
-            extracted_claims=task.get("extracted_claims", []),
-            source_info=self._live_source_info,
-            pattern_flags=self._live_pattern_flags,
-            virality_risk=task.get("virality_risk", "low"),
-            known_claims=self._live_known_claims,
-            current_label=s.current_label,
+        return Observation(
+            post_id=s.post_id,
+            post_text=s.post_text,
+            task_description=self._task["description"],
+            step_number=step,
+            max_steps=max_s,
+            claims_extracted=list(s.claims_extracted),
+            sources_checked=list(s.sources_checked),
+            patterns_detected=list(s.patterns_detected),
+            cross_verifications=list(s.cross_verifications),
+            current_fake_score=s.current_fake_score,
             current_alert=s.current_alert,
-            confidence=s.confidence,
-            fake_score=s.fake_score,
-            step_feedback=feedback,
-            step_number=s.step_number,
-            done_hint=done_hint,
-            available_actions=available,
+            available_actions=self.AVAILABLE_ACTIONS,
+            message=msg,
         )
 
-        self._add_upgraded_obs_fields(obs_kwargs, step=s.step_number)
+    # ─── Utilities ───
 
-        return Observation(**obs_kwargs)
+    @classmethod
+    def available_tasks(cls) -> List[str]:
+        return list_tasks()
 
-    def _add_upgraded_obs_fields(
-        self, obs_kwargs: Dict[str, Any], step: int
-    ) -> None:
-        """
-        Safely add upgraded Observation fields (fake_intensity, viral_score,
-        reports_count, safe_share_warning, scan_result, fields_unlocked)
-        only if the current models.py Observation class supports them.
-        This ensures env.py works with BOTH old and upgraded models.py.
-        """
-        try:
-            from models import Observation as _Obs
-            _fields = _Obs.model_fields
-
-            if "fake_intensity" in _fields:
-                obs_kwargs["fake_intensity"] = getattr(self._state, "fake_intensity", 0.0) if self._state else 0.0
-
-            if "viral_score" in _fields:
-                obs_kwargs["viral_score"] = getattr(self._state, "viral_score", 0.0) if self._state else 0.0
-
-            if "reports_count" in _fields:
-                obs_kwargs["reports_count"] = getattr(self._state, "reports_count", 0) if self._state else 0
-
-            if "safe_share_warning" in _fields:
-                fake_score = getattr(self._state, "fake_score", 0.0) if self._state else 0.0
-                obs_kwargs["safe_share_warning"] = fake_score >= 0.40
-
-            if "scan_result" in _fields:
-                obs_kwargs["scan_result"] = None
-
-            if "fields_unlocked" in _fields:
-                unlocked = ["post_text", "virality_risk"]
-                if step >= 1:
-                    unlocked.append("pattern_flags")
-                if self._live_known_claims:
-                    unlocked.append("known_claims")
-                if self._live_source_info:
-                    unlocked.append("source_info")
-                obs_kwargs["fields_unlocked"] = unlocked
-
-        except Exception:
-            pass  # old models.py — no upgraded fields, skip silently
+    def get_grade_result(self) -> Optional[Dict[str, Any]]:
+        return self._grade_result
