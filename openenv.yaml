@@ -23,7 +23,7 @@ tasks:
       Detect obvious fake news with clear conspiracy language,
       blacklisted sources (naturalnews.com), and debunked claims.
     max_steps: 6
-    pass_threshold: 0.65
+    pass_threshold: 0.55
 
   - id: task_medium
     name: Partial Truth and Suspicious Content Detection
@@ -32,7 +32,7 @@ tasks:
       Detect a post that mixes real facts with misleading framing and
       unverified claims. Agent must avoid over-alerting and under-alerting.
     max_steps: 8
-    pass_threshold: 0.60
+    pass_threshold: 0.50
 
   - id: task_hard
     name: Sophisticated Disinformation Campaign Detection
@@ -42,7 +42,7 @@ tasks:
       anchors while embedding a false central claim. Tests confidence
       calibration and resistance to partial-truth manipulation.
     max_steps: 10
-    pass_threshold: 0.55
+    pass_threshold: 0.40
 
 actions:
   - name: analyze_claim

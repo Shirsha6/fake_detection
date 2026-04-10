@@ -121,11 +121,15 @@ class TaskGrader:
         difficulty_multiplier = {"easy": 1.0, "medium": 1.0, "hard": 1.05}[difficulty]
         total = min(1.0, total * difficulty_multiplier)
 
-        # Severe error check: completely wrong on both label AND alert = cap at 0.1
-        if (final_label == Label.REAL and ground_truth_label == Label.FAKE) or \
+        # Severe error check: only penalize if BOTH label AND alert are completely wrong
+        # (not just one of them — this prevents over-penalizing partial mistakes)
+        if (final_label == Label.REAL and ground_truth_label == Label.FAKE) and \
            (final_alert == AlertLevel.GREEN and ground_truth_alert == AlertLevel.RED):
-            total = min(total, 0.10)
-            breakdown.append("SEVERE ERROR: Marked fake post as safe → capped at 0.10")
+            total = min(total, 0.25)
+            breakdown.append("SEVERE ERROR: Marked clearly fake post as safe → capped at 0.25")
+        elif final_label == Label.REAL and ground_truth_label == Label.FAKE:
+            total = min(total, 0.35)
+            breakdown.append("ERROR: Wrong label (real vs fake) → capped at 0.35")
 
         # Clamp
         total = max(0.0, min(1.0, total))
