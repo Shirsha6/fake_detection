@@ -1,110 +1,95 @@
-# pyproject.toml — FakeNews Detection OpenEnv
-# Required for: openenv validate (multi-mode deployment check)
-# Spec: PEP 517 (build-system) + PEP 621 (project metadata)
+name: fakenews-detection-openenv
+version: "1.0.0"
+description: >
+  Social Media Fake News Detection Environment with Multi-Signal Alert System.
+  An OpenEnv-compliant RL environment where AI agents learn to detect fake news
+  through step-based reasoning: claim extraction, source verification,
+  cross-checking, and GREEN/YELLOW/RED alert generation.
+author: "FakeNews Detection Team"
+license: MIT
+tags:
+  - fake-news
+  - content-moderation
+  - social-media
+  - fact-checking
+  - alert-system
+  - openenv
 
-# ─────────────────────────────────────────────
-# BUILD SYSTEM
-# ─────────────────────────────────────────────
+tasks:
+  - id: task_easy
+    name: Basic Fake News Detection
+    difficulty: easy
+    description: >
+      Detect obvious fake news with clear conspiracy language,
+      blacklisted sources (naturalnews.com), and debunked claims.
+    max_steps: 6
+    pass_threshold: 0.65
 
-[build-system]
-requires      = ["setuptools>=68.0", "wheel"]
-build-backend = "setuptools.build_meta"
+  - id: task_medium
+    name: Partial Truth and Suspicious Content Detection
+    difficulty: medium
+    description: >
+      Detect a post that mixes real facts with misleading framing and
+      unverified claims. Agent must avoid over-alerting and under-alerting.
+    max_steps: 8
+    pass_threshold: 0.60
 
-# ─────────────────────────────────────────────
-# PROJECT METADATA  (PEP 621)
-# ─────────────────────────────────────────────
+  - id: task_hard
+    name: Sophisticated Disinformation Campaign Detection
+    difficulty: hard
+    description: >
+      Detect sophisticated disinformation using true claims as credibility
+      anchors while embedding a false central claim. Tests confidence
+      calibration and resistance to partial-truth manipulation.
+    max_steps: 10
+    pass_threshold: 0.55
 
-[project]
-name        = "fakenews-detection-env"
-version     = "1.0.0"
-description = "Social Media Fake News Detection RL Environment for OpenEnv"
-readme      = "README.md"
-license     = "MIT"
-requires-python = ">=3.11"
+actions:
+  - name: analyze_claim
+    description: Extract and analyze a claim from the social media post
+  - name: check_source
+    description: Check the credibility of a source mentioned in the post
+  - name: cross_verify
+    description: Cross-verify a claim against the knowledge base
+  - name: raise_alert
+    description: Raise a final alert with a fake news classification label
+  - name: mark_safe
+    description: Mark the post as real and safe
 
-authors = [
-  { name = "Team OpenEnv Hackathon" }
-]
+observation_space:
+  type: object
+  properties:
+    post_id: string
+    post_text: string
+    task_description: string
+    step_number: integer
+    max_steps: integer
+    claims_extracted: array
+    sources_checked: array
+    patterns_detected: array
+    cross_verifications: array
+    current_fake_score: float
+    current_alert: string
+    available_actions: array
+    message: string
 
-keywords = [
-  "openenv",
-  "fake-news",
-  "misinformation",
-  "reinforcement-learning",
-  "social-media",
-  "rl-environment",
-  "agent-evaluation",
-]
+reward_space:
+  min: -1.0
+  max: 1.0
+  partial_rewards: true
+  description: >
+    Partial rewards throughout trajectory. Components include detection
+    accuracy, alert correctness, evidence quality, action coverage,
+    and efficiency. Severe penalties for marking fake posts as safe.
 
-classifiers = [
-  "Development Status :: 4 - Beta",
-  "Intended Audience :: Developers",
-  "Intended Audience :: Science/Research",
-  "Topic :: Scientific/Engineering :: Artificial Intelligence",
-  "Programming Language :: Python :: 3",
-  "Programming Language :: Python :: 3.11",
-  "Operating System :: OS Independent",
-]
-
-# Runtime dependencies (mirrors requirements.txt exactly)
-dependencies = [
-  "fastapi==0.111.0",
-  "uvicorn[standard]==0.29.0",
-  "python-multipart==0.0.9",
-  "pydantic==2.7.1",
-  "openai==1.30.1",
-  "requests==2.32.2",
-]
-
-# ─────────────────────────────────────────────
-# ENTRY POINTS
-# ─────────────────────────────────────────────
-
-[project.scripts]
-fakenews-env = "main:main"
-
-# ─────────────────────────────────────────────
-# OPENENV TOOL CONFIG  (read by openenv validate)
-# ─────────────────────────────────────────────
-
-[tool.openenv]
-name            = "fakenews-detection-env"
-version         = "1.0.0"
-entry_point     = "server:app"
-port            = 7860
-framework       = "fastapi"
-manifest        = "openenv.yaml"
-
-  [tool.openenv.server]
-  host            = "0.0.0.0"
-  port            = 7860
-  module          = "server"
-  app             = "app"
-  dockerfile      = "Dockerfile"
-
-  [tool.openenv.tasks]
-  easy   = { ground_truth = "fake",        alert = "RED",    difficulty = "easy"   }
-  medium = { ground_truth = "likely_fake", alert = "RED",    difficulty = "medium" }
-  hard   = { ground_truth = "suspicious",  alert = "YELLOW", difficulty = "hard"   }
-
-  [tool.openenv.inference]
-  script          = "inference.py"
-  max_runtime_min = 20
-  min_vcpu        = 2
-  min_memory_gb   = 8
-
-# ─────────────────────────────────────────────
-# SETUPTOOLS CONFIG
-# ─────────────────────────────────────────────
-
-[tool.setuptools]
-py-modules = [
-  "models",
-  "rewards",
-  "env",
-  "tasks",
-  "grader",
-  "server",
-  "main",
-  "inference",
-]
+server:
+  port: 7860
+  endpoints:
+    - path: /reset
+      method: POST
+    - path: /step
+      method: POST
+    - path: /state
+      method: GET
+    - path: /health
+      method: GET

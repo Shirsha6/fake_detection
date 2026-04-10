@@ -10,12 +10,8 @@
 # ─────────────────────────────────────────────
 
 [build-system]
-requires      = ["setuptools>=68.0", "wheel"]
+requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
-
-# ─────────────────────────────────────────────
-# PROJECT METADATA  (PEP 621)
-# ─────────────────────────────────────────────
 
 [project]
 name            = "fakenews-detection-env"
@@ -51,72 +47,28 @@ classifiers = [
 
 # ── FIX 2: openenv-core>=0.2.0 added ─────────
 dependencies = [
-  "openenv==0.1.13", # ← REQUIRED by openenv validate
-  "fastapi==0.111.0",
-  "uvicorn[standard]==0.29.0",
-  "python-multipart==0.0.9",
-  "pydantic==2.7.1",
-  "openai>=2.7.2",
-  "requests==2.32.2",
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.30.6",
+    "pydantic>=2.7.4",
+    "openai>=1.40.0",
+    "python-multipart>=0.0.9",
+    "httpx>=0.27.0",
+    "openenv-core>=0.2.0",
 ]
 
-# ─────────────────────────────────────────────
-# ENTRY POINTS / SCRIPTS
-# ─────────────────────────────────────────────
-
-# ── FIX 1: 'server' script entry point added ──
-# openenv validate checks for a script named 'server'
-# pointing to server/app.py → main()
 [project.scripts]
-server            = "server.app:main"    # ← REQUIRED by openenv validate
-fakenews-env      = "main:main"          # convenience CLI to start server too
+server = "server.app:main"
 
-# ─────────────────────────────────────────────
-# OPENENV TOOL CONFIG  (read by openenv validate)
-# ─────────────────────────────────────────────
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "httpx>=0.27.0"]
 
 [tool.openenv]
-name        = "fakenews-detection-env"
-version     = "1.0.0"
-entry_point = "server:app"
-port        = 7860
-framework   = "fastapi"
-manifest    = "openenv.yaml"
-
-[tool.openenv.server]
-host       = "0.0.0.0"
-port       = 7860
-module     = "server"
-app        = "app"
-dockerfile = "Dockerfile"
-
-[tool.openenv.tasks]
-easy   = { ground_truth = "fake",        alert = "RED",    difficulty = "easy"   }
-medium = { ground_truth = "likely_fake", alert = "RED",    difficulty = "medium" }
-hard   = { ground_truth = "suspicious",  alert = "YELLOW", difficulty = "hard"   }
-
-[tool.openenv.inference]
-script          = "inference.py"
-max_runtime_min = 20
-min_vcpu        = 2
-min_memory_gb   = 8
-
-# ─────────────────────────────────────────────
-# SETUPTOOLS CONFIG
-# ─────────────────────────────────────────────
+name = "fakenews-detection-openenv"
+version = "1.0.0"
 
 [tool.setuptools.packages.find]
-where = ["."]          # scan from project root
-include = ["server*"]  # include server/ package
+where = ["."]
 
-[tool.setuptools]
-py-modules = [
-  "models",
-  "rewards",
-  "env",
-  "tasks",
-  "grader",
-  "server",
-  "main",
-  "inference",
-]
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py", "*_test.py"]
